@@ -1,0 +1,25 @@
+.build/
+.swiftpm/
+.DS_Store
+DerivedData/
+dist/
+*.xcuserstate
+xcuserdata/
+
+# ローカルのログ・内部データ
+*.jsonl
+*.log
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# 認証情報・署名素材
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.cer
+*.mobileprovision
