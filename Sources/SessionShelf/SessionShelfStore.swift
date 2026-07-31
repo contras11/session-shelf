@@ -101,6 +101,7 @@ final class SessionShelfStore: ObservableObject {
         let generation = UUID()
         detailGeneration = generation
         selectedSession = session
+        selectedDetailTab = session?.kind == .plan ? "プラン" : "会話"
         detail = nil
         errorMessage = nil
         isLoadingDetail = false

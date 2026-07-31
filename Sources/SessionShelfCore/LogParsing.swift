@@ -15,6 +15,7 @@ struct ParsedLog {
     var operations: [OperationEntry] = []
     var changedFiles: Set<ChangedFile> = []
     var wasTruncated = false
+    var planDocument: PlanDocument?
 }
 
 enum LogParsing {
@@ -51,15 +52,12 @@ enum LogParsing {
 
     static func parseMarkdown(at url: URL, byteLimit: Int = LogLimits.detailBytes) throws -> ParsedLog {
         let (text, truncated) = try readText(at: url, byteLimit: byteLimit)
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-        let heading = lines.first { $0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }
-        let title = heading.map { String($0).trimmingCharacters(in: CharacterSet(charactersIn: "# ")) }
-        let cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let document = PlanDocumentParser.parse(text)
         return ParsedLog(
-            title: title ?? url.deletingPathExtension().lastPathComponent,
-            overview: excerpt(cleanText),
-            conversation: [ConversationEntry(speaker: .assistant, text: cleanText)],
-            wasTruncated: truncated
+            title: document.title ?? url.deletingPathExtension().lastPathComponent,
+            overview: document.overview.map { excerpt($0) },
+            wasTruncated: truncated,
+            planDocument: document
         )
     }
 
@@ -83,9 +81,7 @@ enum LogParsing {
         let planURL = directory.appendingPathComponent("plan.md")
         if FileManager.default.fileExists(atPath: planURL.path),
            let plan = try? parseMarkdown(at: planURL, byteLimit: byteLimit) {
-            if !plan.conversation.isEmpty {
-                result.conversation.append(ConversationEntry(speaker: .assistant, text: "【プラン】\n\(plan.conversation[0].text)"))
-            }
+            result.planDocument = plan.planDocument
             result.wasTruncated = result.wasTruncated || plan.wasTruncated
         }
         finish(&result)
@@ -214,10 +210,18 @@ enum LogParsing {
     private static func parseGrok(_ object: [String: Any], into result: inout ParsedLog) {
         let type = (object["type"] as? String ?? "").lowercased()
         let timestamp = date(object["ts"] ?? object["timestamp"])
-        if type.contains("user") {
-            addConversation(text(from: object["content"]), speaker: .user, timestamp: timestamp, into: &result)
+        if type == "system" {
+            let value = text(from: object["content"])
+            addContext(value, label: contextLabel(for: value, fallback: "システム指示"), timestamp: timestamp, into: &result)
+        } else if type.contains("user") {
+            if object["synthetic_reason"] != nil {
+                let value = text(from: object["content"])
+                addContext(value, label: contextLabel(for: value), timestamp: timestamp, into: &result)
+            } else {
+                parseMessageContent(object["content"], speaker: .user, timestamp: timestamp, into: &result)
+            }
         } else if type.contains("assistant") || type.contains("model") {
-            addConversation(text(from: object["content"]), speaker: .assistant, timestamp: timestamp, into: &result)
+            parseMessageContent(object["content"], speaker: .assistant, timestamp: timestamp, into: &result)
             if let calls = object["tool_calls"] as? [Any] {
                 for call in calls {
                     let dictionary = call as? [String: Any] ?? [:]
@@ -253,6 +257,7 @@ enum LogParsing {
         target.operations.append(contentsOf: source.operations)
         target.changedFiles.formUnion(source.changedFiles)
         target.wasTruncated = target.wasTruncated || source.wasTruncated
+        target.planDocument = target.planDocument ?? source.planDocument
     }
 
     private static func finish(_ result: inout ParsedLog) {
@@ -455,6 +460,8 @@ enum LogParsing {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let prefixes = [
             "<recommended_plugins>",
+            "<user_info>",
+            "<system-reminder>",
             "# AGENTS.md instructions",
             "<environment_context>",
             "<app-context>",
@@ -468,8 +475,10 @@ enum LogParsing {
         return prefixes.contains { trimmed.hasPrefix($0) }
     }
 
-    private static func contextLabel(for text: String) -> String {
+    private static func contextLabel(for text: String, fallback: String = "内部情報") -> String {
         if text.contains("<recommended_plugins>") { return "利用可能な連携" }
+        if text.contains("<user_info>") { return "実行環境" }
+        if text.contains("<system-reminder>") { return "システム通知" }
         if text.contains("# AGENTS.md instructions") { return "プロジェクト指示" }
         if text.contains("<environment_context>") { return "実行環境" }
         if text.contains("<app-context>") { return "アプリ情報" }
@@ -478,7 +487,7 @@ enum LogParsing {
         if text.contains("<codex_delegation>") { return "委譲情報" }
         if text.contains("<manually_attached_skills>") { return "スキル情報" }
         if text.contains("<cursor_commands>") { return "Cursorコマンド" }
-        return "内部情報"
+        return fallback
     }
 
     private static func addContext(

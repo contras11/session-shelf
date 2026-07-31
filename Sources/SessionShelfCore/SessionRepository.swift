@@ -43,7 +43,8 @@ public struct SessionRepository: @unchecked Sendable {
             operations: parsed.operations,
             changedFiles: parsed.changedFiles.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending },
             rawLog: raw.0,
-            wasTruncated: parsed.wasTruncated || raw.1
+            wasTruncated: parsed.wasTruncated || raw.1,
+            planDocument: parsed.planDocument
         )
     }
 

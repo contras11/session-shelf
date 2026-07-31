@@ -23,6 +23,7 @@ struct SessionShelfChecks {
         try checkProtection(); completed += 1
         try checkTrashRemovesFromScan(); completed += 1
         try checkMessageBlocks(); completed += 1
+        try checkMarkdownDocument(); completed += 1
         try checkMultipleSelection(); completed += 1
         print("Session Shelf: \(completed)件の検証に成功")
     }
@@ -186,12 +187,53 @@ struct SessionShelfChecks {
     private static func checkCursorPlan() throws {
         try withTemporaryHome { home in
             let plan = home.appendingPathComponent(".cursor/plans/feature.plan.md")
-            try write("# 新機能の計画\n\n1. 一覧を作る", to: plan)
+            try write("""
+            ---
+            name: 新機能の計画
+            overview: 一覧を読みやすくする。
+            todos:
+              - id: task-3
+                content: 一覧を作る
+                status: completed
+              - id: verify
+                content: 表示を確認する
+                status: pending
+              - content: IDなしでも保持する
+                status: in_progress
+            isProject: false
+            ---
+
+            # 新機能の計画
+
+            ## 方針
+
+            - 一覧を作る
+            """, to: plan)
+            let plainPlan = home.appendingPathComponent(".cursor/plans/plain.plan.md")
+            try write("# Front matterなし\n\n本文を保持する。", to: plainPlan)
+            let brokenPlan = home.appendingPathComponent(".cursor/plans/broken.plan.md")
+            try write("---\nname: 閉じタグなし\n# 本文も保持", to: brokenPlan)
+            let codeOnlyPlan = home.appendingPathComponent(".cursor/plans/script.plan.md")
+            try write("```sh\n# これはタイトルではない\necho hello\n```", to: codeOnlyPlan)
             let repository = SessionRepository(homeDirectory: home)
             let shelf = repository.scan(.cursorDesktop)
-            try require(shelf.sessions.first?.kind == .plan, "Cursorプランを検出できない")
-            let item = try requireValue(shelf.sessions.first, "Cursorプランがない")
-            try require(try repository.loadDetail(for: item).conversation[0].text.contains("一覧を作る"), "Cursorプランを読めない")
+            let item = try requireValue(shelf.sessions.first { $0.sourceURL.lastPathComponent == plan.lastPathComponent }, "Cursorプランがない")
+            try require(item.kind == .plan, "Cursorプランを検出できない")
+            try require(item.title == "新機能の計画", "front matterからタイトルを抽出できない")
+            try require(item.overview == "一覧を読みやすくする。", "front matterから概要を抽出できない")
+            let detail = try repository.loadDetail(for: item)
+            try require(detail.conversation.isEmpty, "Cursorプランが会話へ混入")
+            try require(detail.planDocument?.tasks.count == 3, "Cursorプランのタスクを抽出できない")
+            try require(detail.planDocument?.tasks.map(\.status) == [.completed, .pending, .inProgress], "タスク状態の抽出に失敗")
+            try require(detail.planDocument?.tasks.last?.id == "task-3-2", "IDなしタスクへ重複しない識別子を付けられない")
+            try require(detail.planDocument?.body.contains("## 方針") == true, "Markdown本文を保持できない")
+
+            let plainItem = try requireValue(shelf.sessions.first { $0.sourceURL.lastPathComponent == plainPlan.lastPathComponent }, "front matterなしプランがない")
+            try require(try repository.loadDetail(for: plainItem).planDocument?.body.contains("本文を保持する") == true, "front matterなし本文を読めない")
+            let brokenItem = try requireValue(shelf.sessions.first { $0.sourceURL.lastPathComponent == brokenPlan.lastPathComponent }, "壊れたfront matterのプランがない")
+            try require(try repository.loadDetail(for: brokenItem).planDocument?.body.hasPrefix("---") == true, "壊れたfront matterで内容を失った")
+            let codeOnlyItem = try requireValue(shelf.sessions.first { $0.sourceURL.lastPathComponent == codeOnlyPlan.lastPathComponent }, "コードだけのプランがない")
+            try require(codeOnlyItem.title == "script.plan", "コード内コメントをプランタイトルとして誤認")
         }
     }
 
@@ -206,7 +248,10 @@ struct SessionShelfChecks {
             ]
             try JSONSerialization.data(withJSONObject: summary).write(to: directory.appendingPathComponent("summary.json"))
             try writeJSONLines([
-                ["type": "user", "content": "実装してください"],
+                ["type": "system", "content": "Grokのシステム指示"],
+                ["type": "user", "content": [["type": "text", "text": "<user_info>\nWorkspace: /tmp/Grok\n</user_info>"]]],
+                ["type": "user", "synthetic_reason": "system_reminder", "content": [["type": "text", "text": "<system-reminder>\n内部の通知\n</system-reminder>"]]],
+                ["type": "user", "content": [["type": "text", "text": "<user_query>\n実装してください\n</user_query>"]]],
                 [
                     "type": "assistant",
                     "content": "確認します",
@@ -220,9 +265,12 @@ struct SessionShelfChecks {
             try require(shelf.sessions.first?.title == "Grokの作業", "Grokのタイトル抽出に失敗")
             let item = try requireValue(shelf.sessions.first, "Grokを検出できない")
             let detail = try repository.loadDetail(for: item)
-            try require(detail.conversation.count == 5, "Grok会話の抽出に失敗")
+            try require(detail.conversation.count == 8, "Grok会話の抽出に失敗")
             try require(
                 detail.conversation.map(\.kind) == [
+                    .context(label: "システム指示"),
+                    .context(label: "実行環境"),
+                    .context(label: "システム通知"),
                     .message,
                     .message,
                     .toolCall(name: "shell"),
@@ -231,6 +279,11 @@ struct SessionShelfChecks {
                 ],
                 "Grokのツール入出力を会話順に保持できない"
             )
+            try require(
+                detail.conversation.first { $0.kind == .message && $0.speaker == .user }?.text == "実装してください",
+                "Grokのuser_queryから依頼本文を抽出できない"
+            )
+            try require(!item.overview.contains("system-reminder"), "Grokの概要に内部情報が混入")
         }
     }
 
@@ -310,6 +363,43 @@ struct SessionShelfChecks {
             unfinished == [.prose("前文"), .code(language: "zsh", text: "echo hello")],
             "閉じられていないコードフェンスを保持できない"
         )
+    }
+
+    private static func checkMarkdownDocument() throws {
+        let blocks = MarkdownDocumentParser.parse("""
+        # 見出し
+
+        段落です。
+
+        - 項目
+        - [x] 完了項目
+
+        1. 最初
+        2. 次
+
+        > 引用です
+
+        | 観点 | 結果 |
+        | --- | --- |
+        | 表示 | 成功 |
+
+        ```swift
+        let value = 1
+        ```
+        """)
+        try require(blocks.contains(.heading(level: 1, text: "見出し")), "Markdown見出しを解析できない")
+        try require(blocks.contains(.paragraph("段落です。")), "Markdown段落を解析できない")
+        try require(blocks.contains(.unorderedList([
+            DocumentListItem(text: "項目"),
+            DocumentListItem(text: "完了項目", isChecked: true)
+        ])), "Markdownチェック項目を解析できない")
+        try require(blocks.contains(.orderedList([
+            DocumentListItem(text: "最初"),
+            DocumentListItem(text: "次")
+        ])), "Markdown番号付きリストを解析できない")
+        try require(blocks.contains(.quote("引用です")), "Markdown引用を解析できない")
+        try require(blocks.contains(.table(headers: ["観点", "結果"], rows: [["表示", "成功"]])), "Markdown表を解析できない")
+        try require(blocks.contains(.code(language: "swift", text: "let value = 1")), "Markdownコードを解析できない")
     }
 
     private static func checkMultipleSelection() throws {

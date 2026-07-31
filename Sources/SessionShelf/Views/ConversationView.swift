@@ -13,6 +13,12 @@ struct ConversationView: View {
         }
     }
 
+    private var internalContextCount: Int {
+        entries.reduce(into: 0) { count, entry in
+            if case .context = entry.kind { count += 1 }
+        }
+    }
+
     private var displayItems: [ConversationDisplayItem] {
         ConversationDisplayItem.group(
             entries,
@@ -29,7 +35,7 @@ struct ConversationView: View {
                     HStack {
                         Spacer()
                         Toggle(isOn: $viewState.showsInternalContext) {
-                            Label("内部情報を表示", systemImage: "gearshape")
+                            Label("内部情報 \(internalContextCount)件", systemImage: "gearshape")
                         }
                         .toggleStyle(.button)
                         .controlSize(.small)
@@ -130,10 +136,7 @@ private struct MessageBubble: View {
                 ForEach(Array(MessageBlockParser.parse(entry.text).enumerated()), id: \.offset) { _, block in
                     switch block {
                     case .prose(let text):
-                        Text(markdown(text))
-                            .lineSpacing(3)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        MarkdownContentView(text: text, compact: true)
                     case .code(let language, let text):
                         CollapsibleCodeBlock(language: language, text: text)
                     }
@@ -165,10 +168,6 @@ private struct MessageBubble: View {
         }
     }
 
-    private func markdown(_ text: String) -> AttributedString {
-        // 全文向けの解釈により、見出しや箇条書きの記号を表示文へ露出させない。
-        (try? AttributedString(markdown: text)) ?? AttributedString(text)
-    }
 }
 
 private struct OperationGroup: View {
@@ -267,7 +266,7 @@ private struct ContextBlock: View {
     }
 }
 
-private struct CollapsibleCodeBlock: View {
+struct CollapsibleCodeBlock: View {
     let language: String?
     let text: String
     @StateObject private var disclosureState = DisclosureState()

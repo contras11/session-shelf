@@ -6,6 +6,7 @@ struct SessionDetailView: View {
 
     enum DetailTab: String, CaseIterable, Identifiable {
         case conversation = "会話"
+        case plan = "プラン"
         case operations = "操作履歴"
         case files = "変更したファイル"
         case raw = "生ログ"
@@ -23,7 +24,7 @@ struct SessionDetailView: View {
                 ToolbarItem(placement: .principal) {
                     if session.isSupported, store.detail != nil {
                         Picker("表示", selection: $store.selectedDetailTab) {
-                            ForEach(DetailTab.allCases) { tab in
+                            ForEach(availableTabs(for: session, detail: store.detail)) { tab in
                                 Text(tab.rawValue).tag(tab.rawValue)
                             }
                         }
@@ -67,7 +68,7 @@ struct SessionDetailView: View {
                         .frame(maxWidth: .infinity)
                         .background(.quaternary.opacity(0.4))
                 }
-                tabContent(detail)
+                tabContent(detail, session: session)
             }
         } else {
             ContentUnavailableView("内容を表示できません", systemImage: "doc.text.magnifyingglass")
@@ -101,10 +102,21 @@ struct SessionDetailView: View {
     }
 
     @ViewBuilder
-    private func tabContent(_ detail: SessionDetail) -> some View {
-        switch DetailTab(rawValue: store.selectedDetailTab) ?? .conversation {
+    private func tabContent(_ detail: SessionDetail, session: SessionSummary) -> some View {
+        let fallback: DetailTab = session.kind == .plan ? .plan : .conversation
+        switch DetailTab(rawValue: store.selectedDetailTab) ?? fallback {
         case .conversation:
             ConversationView(entries: detail.conversation)
+        case .plan:
+            if let document = detail.planDocument {
+                PlanDocumentView(
+                    document: document,
+                    sessionTitle: session.title,
+                    sessionOverview: session.overview
+                )
+            } else {
+                ContentUnavailableView("プランがありません", systemImage: "doc.text")
+            }
         case .operations:
             OperationsView(entries: detail.operations)
         case .files:
@@ -112,6 +124,14 @@ struct SessionDetailView: View {
         case .raw:
             RawLogView(text: detail.rawLog)
         }
+    }
+
+    private func availableTabs(for session: SessionSummary, detail: SessionDetail?) -> [DetailTab] {
+        if session.kind == .plan { return [.plan, .raw] }
+        var tabs: [DetailTab] = [.conversation]
+        if detail?.planDocument != nil { tabs.append(.plan) }
+        tabs.append(contentsOf: [.operations, .files, .raw])
+        return tabs
     }
 }
 

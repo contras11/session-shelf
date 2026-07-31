@@ -191,25 +191,95 @@ public struct ChangedFile: Identifiable, Hashable, Sendable {
     public init(path: String) { self.path = path }
 }
 
+public enum PlanTaskStatus: String, Equatable, Sendable {
+    case pending
+    case inProgress
+    case completed
+    case unknown
+
+    public var label: String {
+        switch self {
+        case .pending: "未着手"
+        case .inProgress: "進行中"
+        case .completed: "完了"
+        case .unknown: "状態不明"
+        }
+    }
+}
+
+public struct PlanTask: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let content: String
+    public let status: PlanTaskStatus
+
+    public init(id: String, content: String, status: PlanTaskStatus) {
+        self.id = id
+        self.content = content
+        self.status = status
+    }
+}
+
+public struct PlanDocument: Equatable, Sendable {
+    public let title: String?
+    public let overview: String?
+    public let tasks: [PlanTask]
+    public let body: String
+    public let isProject: Bool?
+
+    public init(title: String?, overview: String?, tasks: [PlanTask], body: String, isProject: Bool?) {
+        self.title = title
+        self.overview = overview
+        self.tasks = tasks
+        self.body = body
+        self.isProject = isProject
+    }
+}
+
+public struct DocumentListItem: Equatable, Sendable {
+    public let text: String
+    public let level: Int
+    public let isChecked: Bool?
+
+    public init(text: String, level: Int = 0, isChecked: Bool? = nil) {
+        self.text = text
+        self.level = level
+        self.isChecked = isChecked
+    }
+}
+
+public enum MarkdownDocumentBlock: Equatable, Sendable {
+    case heading(level: Int, text: String)
+    case paragraph(String)
+    case unorderedList([DocumentListItem])
+    case orderedList([DocumentListItem])
+    case quote(String)
+    case table(headers: [String], rows: [[String]])
+    case code(language: String?, text: String)
+    case divider
+}
+
 public struct SessionDetail: Sendable {
     public let conversation: [ConversationEntry]
     public let operations: [OperationEntry]
     public let changedFiles: [ChangedFile]
     public let rawLog: String
     public let wasTruncated: Bool
+    public let planDocument: PlanDocument?
 
     public init(
         conversation: [ConversationEntry],
         operations: [OperationEntry],
         changedFiles: [ChangedFile],
         rawLog: String,
-        wasTruncated: Bool
+        wasTruncated: Bool,
+        planDocument: PlanDocument? = nil
     ) {
         self.conversation = conversation
         self.operations = operations
         self.changedFiles = changedFiles
         self.rawLog = rawLog
         self.wasTruncated = wasTruncated
+        self.planDocument = planDocument
     }
 }
 
