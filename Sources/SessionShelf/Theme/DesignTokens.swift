@@ -71,4 +71,20 @@ enum Theme {
         case .system: "gearshape.fill"
         }
     }
+
+    static func storageSafetyColor(_ safety: StorageSafety) -> Color {
+        switch safety {
+        case .regeneratable: .green
+        case .reviewRequired: .orange
+        case .protected: .secondary
+        }
+    }
+
+    static func storageSafetySymbol(_ safety: StorageSafety) -> String {
+        switch safety {
+        case .regeneratable: "arrow.triangle.2.circlepath"
+        case .reviewRequired: "exclamationmark.triangle.fill"
+        case .protected: "lock.fill"
+        }
+    }
 }

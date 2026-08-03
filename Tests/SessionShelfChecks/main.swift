@@ -25,6 +25,9 @@ struct SessionShelfChecks {
         try checkMessageBlocks(); completed += 1
         try checkMarkdownDocument(); completed += 1
         try checkMultipleSelection(); completed += 1
+        try checkStorageClassification(); completed += 1
+        try checkStorageDeletionGuards(); completed += 1
+        try checkStorageCancellation(); completed += 1
         print("Session Shelf: \(completed)件の検証に成功")
     }
 
@@ -37,6 +40,14 @@ struct SessionShelfChecks {
             }
             print("\(shelf.tool.displayName): \(shelf.status.label)、本文確認 \(supported.isEmpty ? "対象なし" : "成功")")
         }
+        let storage = StorageRepository().scanAll()
+        for tool in AITool.allCases {
+            let items = storage.items.filter { $0.tool == tool }
+            let bytes = items.reduce(0) { $0 + $1.byteCount }
+            let deletable = items.filter { $0.safety != .protected }.count
+            print("\(tool.displayName)ストレージ: \(bytes.formatted(.byteCount(style: .file)))、整理候補\(deletable)件")
+        }
+        print("ストレージ確認エラー: \(storage.issues.count)件")
     }
 
     private static func checkCodex() throws {
@@ -432,6 +443,147 @@ struct SessionShelfChecks {
         )
         selection.clear()
         try require(selection.focusedID == nil && selection.selectedIDs.isEmpty, "ツール切替時に選択を解除できない")
+    }
+
+    private static func checkStorageClassification() throws {
+        try withTemporaryHome { home in
+            let now = Date(timeIntervalSince1970: 2_000_000_000)
+            let oldDate = now.addingTimeInterval(-10 * 24 * 60 * 60)
+            let recentDate = now.addingTimeInterval(-10 * 60)
+
+            let codexCache = home.appendingPathComponent(".codex/cache/catalog.json")
+            let codexBackup = home.appendingPathComponent(".codex/.tmp/plugins-backup-old/repo/data.bin")
+            let codexStaging = home.appendingPathComponent(".codex/.tmp/bundled-marketplaces/openai-bundled.staging-old/data.bin")
+            let codexRecentBackup = home.appendingPathComponent(".codex/.tmp/plugins-backup-new/data.bin")
+            let generatedImage = home.appendingPathComponent(".codex/generated_images/sample/image.png")
+            let auth = home.appendingPathComponent(".codex/auth.json")
+            let worktree = home.appendingPathComponent(".codex/worktrees/sample/App.swift")
+            for url in [codexCache, codexBackup, codexStaging, generatedImage, auth, worktree] {
+                try write("fixture", to: url)
+                try setTreeModificationDate(oldDate, from: url, through: home)
+            }
+            try write("fixture", to: codexRecentBackup)
+            try setTreeModificationDate(recentDate, from: codexRecentBackup, through: home)
+
+            let claudeCache = home.appendingPathComponent(".claude/cache/models.json")
+            let claudeDebug = home.appendingPathComponent(".claude/debug/old.log")
+            let cursorCache = home.appendingPathComponent(".cursor/statsig-cache.json")
+            let cursorTracking = home.appendingPathComponent(".cursor/ai-tracking/old.log")
+            let cursorProject = home.appendingPathComponent(".cursor/projects/sample/agent.jsonl")
+            for url in [claudeCache, claudeDebug, cursorCache, cursorTracking, cursorProject] {
+                try write("fixture", to: url)
+                try setTreeModificationDate(oldDate, from: url, through: home)
+            }
+
+            let currentGrok = home.appendingPathComponent(".grok/downloads/grok-macos-aarch64")
+            let oldGrok = home.appendingPathComponent(".grok/downloads/grok-0.1.0-macos-aarch64")
+            try write("current", to: currentGrok)
+            try write("old", to: oldGrok)
+            try FileManager.default.createDirectory(
+                at: home.appendingPathComponent(".grok/bin"),
+                withIntermediateDirectories: true
+            )
+            try FileManager.default.createSymbolicLink(
+                atPath: home.appendingPathComponent(".grok/bin/grok").path,
+                withDestinationPath: "../downloads/grok-macos-aarch64"
+            )
+            for url in [currentGrok, oldGrok] {
+                try setTreeModificationDate(oldDate, from: url, through: home)
+            }
+
+            let repository = StorageRepository(homeDirectory: home, now: { now })
+            let report = repository.scanAll()
+            try require(!report.wasCancelled, "通常のストレージ走査が中止扱いになった")
+            try require(storageItem(in: report, suffix: ".codex/cache")?.safety == .regeneratable, "Codexキャッシュを再生成可能に分類できない")
+            try require(storageItem(in: report, suffix: "plugins-backup-old")?.safety == .regeneratable, "古いCodexバックアップを分類できない")
+            try require(storageItem(in: report, suffix: "openai-bundled.staging-old")?.safety == .regeneratable, "古いCodex stagingを分類できない")
+            try require(storageItem(in: report, suffix: "plugins-backup-new")?.safety == .protected, "新しい一時データを保護できない")
+            try require(storageItem(in: report, suffix: ".codex/generated_images")?.safety == .reviewRequired, "生成画像を要確認に分類できない")
+            try require(storageItem(in: report, suffix: ".codex/auth.json")?.safety == .protected, "認証情報を保護できない")
+            try require(storageItem(in: report, suffix: ".codex/worktrees")?.safety == .protected, "worktreeを保護できない")
+            try require(storageItem(in: report, suffix: ".claude/cache")?.safety == .regeneratable, "Claudeキャッシュを分類できない")
+            try require(storageItem(in: report, suffix: ".claude/debug")?.safety == .reviewRequired, "Claude診断ログを分類できない")
+            try require(storageItem(in: report, suffix: ".cursor/statsig-cache.json")?.safety == .regeneratable, "Cursorキャッシュを分類できない")
+            try require(storageItem(in: report, suffix: ".cursor/ai-tracking")?.tool == .cursorCLI, "Cursor CLI所有データをDesktopと重複させている")
+            try require(report.items.filter { $0.location.path.hasSuffix(".cursor/projects") }.count == 1, "Cursor保存領域を二重集計している")
+            try require(storageItem(in: report, suffix: "grok-macos-aarch64")?.safety == .protected, "現在のGrok実行ファイルを保護できない")
+            try require(storageItem(in: report, suffix: "grok-0.1.0-macos-aarch64")?.safety == .regeneratable, "以前のGrok実行ファイルを分類できない")
+        }
+    }
+
+    private static func checkStorageDeletionGuards() throws {
+        try withTemporaryHome { home in
+            let now = Date(timeIntervalSince1970: 2_000_000_000)
+            let oldDate = now.addingTimeInterval(-10 * 24 * 60 * 60)
+            let cacheFile = home.appendingPathComponent(".codex/cache/value.bin")
+            let backupFile = home.appendingPathComponent(".codex/.tmp/plugins-backup-delete/value.bin")
+            try write("cache", to: cacheFile)
+            try write("backup", to: backupFile)
+            for url in [cacheFile, backupFile] {
+                try setTreeModificationDate(oldDate, from: url, through: home)
+            }
+            let link = home.appendingPathComponent(".codex/unknown-link")
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: home)
+
+            let repository = StorageRepository(homeDirectory: home, now: { now })
+            let report = repository.scanAll()
+            let cache = try requireValue(storageItem(in: report, suffix: ".codex/cache"), "削除検証用キャッシュがない")
+            let backup = try requireValue(storageItem(in: report, suffix: "plugins-backup-delete"), "削除検証用バックアップがない")
+            let linked = try requireValue(storageItem(in: report, suffix: ".codex/unknown-link"), "リンクを検出できない")
+            try require(linked.safety == .protected, "リンク経由の項目を保護できない")
+
+            try write("changed", to: cacheFile.deletingLastPathComponent().appendingPathComponent("new.bin"))
+            do {
+                try repository.moveToTrash(cache)
+                throw CheckFailure.failed("確認後に変化したキャッシュを移動できてしまった")
+            } catch SessionShelfError.storageItemChanged {
+                // 期待どおり
+            }
+
+            try repository.moveToTrash(backup)
+            try require(!FileManager.default.fileExists(atPath: backup.location.path), "安全判定済みバックアップをゴミ箱へ移せない")
+
+            let outside = StorageItem(
+                id: "outside",
+                tool: .codex,
+                category: .cache,
+                safety: .regeneratable,
+                title: "範囲外",
+                explanation: "fixture",
+                deletionImpact: "fixture",
+                safetyReason: "fixture",
+                byteCount: 0,
+                fileCount: 0,
+                modifiedAt: oldDate,
+                location: home.appendingPathComponent("outside")
+            )
+            do {
+                try repository.moveToTrash(outside)
+                throw CheckFailure.failed("許可ルート外を移動できてしまった")
+            } catch SessionShelfError.outsideAllowedLocation {
+                // 期待どおり
+            }
+        }
+    }
+
+    private static func checkStorageCancellation() throws {
+        try withTemporaryHome { home in
+            try write("fixture", to: home.appendingPathComponent(".codex/cache/item"))
+            let report = StorageRepository(homeDirectory: home).scanAll(shouldCancel: { true })
+            try require(report.wasCancelled && report.items.isEmpty, "ストレージ走査を中止できない")
+        }
+    }
+
+    private static func storageItem(in report: StorageScanReport, suffix: String) -> StorageItem? {
+        report.items.first { $0.location.path.hasSuffix(suffix) }
+    }
+
+    private static func setTreeModificationDate(_ date: Date, from file: URL, through home: URL) throws {
+        var current = file
+        while current.path.hasPrefix(home.path), current != home {
+            try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: current.path)
+            current.deleteLastPathComponent()
+        }
     }
 
     private static func withTemporaryHome(_ body: (URL) throws -> Void) throws {

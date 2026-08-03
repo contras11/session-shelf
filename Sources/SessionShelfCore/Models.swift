@@ -60,6 +60,124 @@ public struct ToolShelf: Identifiable, Equatable, Sendable {
     }
 }
 
+public enum StorageCategory: String, CaseIterable, Codable, Sendable {
+    case cache
+    case temporary
+    case generatedOutput
+    case diagnostic
+    case conversation
+    case applicationData
+    case customization
+    case configuration
+    case unknown
+
+    public var label: String {
+        switch self {
+        case .cache: "キャッシュ"
+        case .temporary: "一時ファイル"
+        case .generatedOutput: "生成物"
+        case .diagnostic: "診断ログ"
+        case .conversation: "会話履歴"
+        case .applicationData: "アプリの動作データ"
+        case .customization: "カスタマイズ"
+        case .configuration: "設定・認証"
+        case .unknown: "未対応データ"
+        }
+    }
+}
+
+public enum StorageSafety: Int, CaseIterable, Codable, Comparable, Sendable {
+    case regeneratable = 0
+    case reviewRequired = 1
+    case protected = 2
+
+    public static func < (lhs: StorageSafety, rhs: StorageSafety) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+
+    public var label: String {
+        switch self {
+        case .regeneratable: "再生成可能"
+        case .reviewRequired: "要確認"
+        case .protected: "保護"
+        }
+    }
+}
+
+public struct StorageItem: Identifiable, Hashable, Sendable {
+    public let id: String
+    public let tool: AITool
+    public let category: StorageCategory
+    public let safety: StorageSafety
+    public let title: String
+    public let explanation: String
+    public let deletionImpact: String
+    public let safetyReason: String
+    public let byteCount: Int64
+    public let fileCount: Int
+    public let modifiedAt: Date
+    public let location: URL
+    public let containsSymbolicLink: Bool
+
+    public init(
+        id: String,
+        tool: AITool,
+        category: StorageCategory,
+        safety: StorageSafety,
+        title: String,
+        explanation: String,
+        deletionImpact: String,
+        safetyReason: String,
+        byteCount: Int64,
+        fileCount: Int,
+        modifiedAt: Date,
+        location: URL,
+        containsSymbolicLink: Bool = false
+    ) {
+        self.id = id
+        self.tool = tool
+        self.category = category
+        self.safety = safety
+        self.title = title
+        self.explanation = explanation
+        self.deletionImpact = deletionImpact
+        self.safetyReason = safetyReason
+        self.byteCount = byteCount
+        self.fileCount = fileCount
+        self.modifiedAt = modifiedAt
+        self.location = location
+        self.containsSymbolicLink = containsSymbolicLink
+    }
+}
+
+public struct StorageScanIssue: Identifiable, Equatable, Sendable {
+    public let path: String
+    public let message: String
+    public var id: String { path }
+
+    public init(path: String, message: String) {
+        self.path = path
+        self.message = message
+    }
+}
+
+public struct StorageScanReport: Equatable, Sendable {
+    public let items: [StorageItem]
+    public let issues: [StorageScanIssue]
+    public let wasCancelled: Bool
+
+    public init(items: [StorageItem], issues: [StorageScanIssue] = [], wasCancelled: Bool = false) {
+        self.items = items
+        self.issues = issues
+        self.wasCancelled = wasCancelled
+    }
+
+    public var totalByteCount: Int64 { items.reduce(0) { $0 + $1.byteCount } }
+    public var deletableByteCount: Int64 {
+        items.filter { $0.safety != .protected }.reduce(0) { $0 + $1.byteCount }
+    }
+}
+
 public enum SessionKind: String, Sendable {
     case conversation = "会話"
     case plan = "プラン"
@@ -288,6 +406,8 @@ public enum SessionShelfError: LocalizedError, Equatable {
     case unsupported(String)
     case protectedItem(String)
     case outsideAllowedLocation
+    case storageItemChanged
+    case scanCancelled
 
     public var errorDescription: String? {
         switch self {
@@ -295,6 +415,8 @@ public enum SessionShelfError: LocalizedError, Equatable {
         case .unsupported(let message): "未対応の保存形式です: \(message)"
         case .protectedItem(let reason): "保護対象のため移動できません: \(reason)"
         case .outsideAllowedLocation: "許可されたセッション保存場所の外にあるため移動できません"
+        case .storageItemChanged: "確認後に内容が変わったため、安全のため移動を中止しました"
+        case .scanCancelled: "ストレージの確認を中止しました"
         }
     }
 }

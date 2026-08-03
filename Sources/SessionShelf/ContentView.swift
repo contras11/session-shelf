@@ -7,14 +7,27 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             ToolSidebar(store: store)
-                .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 300)
+                .navigationSplitViewColumnWidth(min: 230, ideal: 260, max: 340)
         } content: {
-            SessionListView(store: store)
-                .navigationSplitViewColumnWidth(min: 320, ideal: 380, max: 480)
+            Group {
+                if store.isStoragePresented {
+                    StorageListView(store: store)
+                } else {
+                    SessionListView(store: store)
+                }
+            }
+            .navigationSplitViewColumnWidth(min: 320, ideal: 380, max: 480)
         } detail: {
-            SessionDetailView(store: store)
+            if store.isStoragePresented {
+                StorageDetailView(store: store)
+            } else {
+                SessionDetailView(store: store)
+            }
         }
-        .task { store.reload() }
+        .task {
+            store.reload()
+            store.reloadStorage()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .sessionShelfReload)) { _ in
             store.reload()
         }
@@ -42,6 +55,22 @@ struct ContentView: View {
         } message: { request in
             Text(trashMessage(for: request))
         }
+        .confirmationDialog(
+            storageTrashDialogTitle,
+            isPresented: Binding(
+                get: { store.storageTrashRequest != nil },
+                set: { if !$0 { store.storageTrashRequest = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: store.storageTrashRequest
+        ) { request in
+            Button(storageTrashButtonTitle(for: request), role: .destructive) {
+                store.confirmStorageTrash(request)
+            }
+            Button("キャンセル", role: .cancel) { store.storageTrashRequest = nil }
+        } message: { request in
+            Text(storageTrashMessage(for: request))
+        }
     }
 
     private var trashDialogTitle: String {
@@ -59,5 +88,35 @@ struct ContentView: View {
         let recovery = "完全削除は行いません。macOSのゴミ箱から戻せます。"
         guard request.excludedCount > 0 else { return recovery }
         return "\(request.excludedCount)件は保護中または未対応のため除外します。\(recovery)"
+    }
+
+    private var storageTrashDialogTitle: String {
+        guard let request = store.storageTrashRequest else { return "ゴミ箱へ移しますか？" }
+        if request.requiresStrongWarning {
+            return request.eligible.count == 1
+                ? "失われる可能性があるデータを移しますか？"
+                : "失われる可能性がある\(request.eligible.count)件を移しますか？"
+        }
+        return request.eligible.count == 1
+            ? "この項目をゴミ箱へ移しますか？"
+            : "選択した\(request.eligible.count)件をゴミ箱へ移しますか？"
+    }
+
+    private func storageTrashButtonTitle(for request: StorageTrashRequest) -> String {
+        request.eligible.count == 1 ? "内容を理解してゴミ箱へ移す" : "\(request.eligible.count)件をゴミ箱へ移す"
+    }
+
+    private func storageTrashMessage(for request: StorageTrashRequest) -> String {
+        var parts: [String] = []
+        if request.requiresStrongWarning {
+            parts.append("「要確認」の項目には、再生成できない画像や診断記録が含まれる可能性があります。")
+        } else {
+            parts.append("必要になったデータは各ツールが再取得または再作成します。")
+        }
+        if request.excludedCount > 0 {
+            parts.append("\(request.excludedCount)件は保護対象のため除外します。")
+        }
+        parts.append("完全削除は行いません。macOSのゴミ箱から戻せます。")
+        return parts.joined()
     }
 }

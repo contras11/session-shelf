@@ -12,13 +12,81 @@ struct TrashRequest: Identifiable {
     var excludedCount: Int { sessions.count - eligible.count }
 }
 
+enum SidebarDestination: Hashable {
+    case tool(AITool)
+    case storage(StorageToolFilter)
+}
+
+enum StorageFilter: String, CaseIterable, Identifiable {
+    case all = "すべて"
+    case regeneratable = "再生成可能"
+    case reviewRequired = "要確認"
+    case protected = "保護"
+
+    var id: String { rawValue }
+
+    func includes(_ item: StorageItem) -> Bool {
+        switch self {
+        case .all: true
+        case .regeneratable: item.safety == .regeneratable
+        case .reviewRequired: item.safety == .reviewRequired
+        case .protected: item.safety == .protected
+        }
+    }
+}
+
+enum StorageToolFilter: Hashable, Identifiable {
+    case all
+    case tool(AITool)
+
+    static var allCases: [StorageToolFilter] {
+        [.all] + AITool.allCases.map(StorageToolFilter.tool)
+    }
+
+    var id: String {
+        switch self {
+        case .all: "all"
+        case .tool(let tool): tool.id
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .all: "すべて"
+        case .tool(let tool): tool.displayName
+        }
+    }
+
+    func includes(_ item: StorageItem) -> Bool {
+        switch self {
+        case .all: true
+        case .tool(let tool): item.tool == tool
+        }
+    }
+}
+
+struct StorageTrashRequest: Identifiable {
+    let id = UUID()
+    let items: [StorageItem]
+
+    var eligible: [StorageItem] { items.filter { $0.safety != .protected } }
+    var excludedCount: Int { items.count - eligible.count }
+    var requiresStrongWarning: Bool { eligible.contains { $0.safety == .reviewRequired } }
+}
+
 @MainActor
 final class SessionShelfStore: ObservableObject {
     @Published var shelves: [ToolShelf] = []
-    @Published var selectedTool: AITool? = .codex {
+    @Published var selectedDestination: SidebarDestination? = .tool(.codex) {
         didSet {
-            guard oldValue != selectedTool else { return }
-            clearSelection()
+            guard oldValue != selectedDestination else { return }
+            if let filter = selectedDestination?.storageFilter {
+                lastStorageToolFilter = filter
+            }
+            if oldValue?.tool != selectedDestination?.tool { clearSelection() }
+            if oldValue?.storageFilter != selectedDestination?.storageFilter {
+                reconcileStorageSelection(visibleItems: visibleStorageItems)
+            }
         }
     }
     @Published var selectedSessionIDs: Set<String> = []
@@ -30,14 +98,37 @@ final class SessionShelfStore: ObservableObject {
     @Published var trashRequest: TrashRequest?
     @Published var searchText = ""
     @Published var selectedDetailTab = "会話"
+    @Published var storageReport = StorageScanReport(items: [])
+    @Published var isScanningStorage = false
+    @Published var storageFilter: StorageFilter = .all
+    @Published var storageSearchText = ""
+    @Published var selectedStorageItemIDs: Set<String> = []
+    @Published var selectedStorageItem: StorageItem?
+    @Published var storageTrashRequest: StorageTrashRequest?
+    @Published var isDeletingStorage = false
+    @Published private(set) var lastStorageToolFilter: StorageToolFilter = .all
 
     private let repository: SessionRepository
+    private let storageRepository: StorageRepository
     private var scanGeneration = UUID()
+    private var storageScanGeneration = UUID()
+    private var storageScanTask: Task<Void, Never>?
     private var detailGeneration = UUID()
     private var selectionState = SessionSelectionState()
+    private var storageSelectionState = SessionSelectionState()
 
-    init(repository: SessionRepository = SessionRepository()) {
+    init(
+        repository: SessionRepository = SessionRepository(),
+        storageRepository: StorageRepository = StorageRepository()
+    ) {
         self.repository = repository
+        self.storageRepository = storageRepository
+    }
+
+    var selectedTool: AITool? { selectedDestination?.tool }
+    var isStoragePresented: Bool { selectedDestination?.storageFilter != nil }
+    var storageToolFilter: StorageToolFilter {
+        selectedDestination?.storageFilter ?? lastStorageToolFilter
     }
 
     var selectedShelf: ToolShelf? {
@@ -52,6 +143,53 @@ final class SessionShelfStore: ObservableObject {
         selectedSessions.filter { $0.isSupported && !$0.isProtected }
     }
 
+    var visibleStorageItems: [StorageItem] {
+        storageReport.items.filter { item in
+            storageToolFilter.includes(item)
+                && storageFilter.includes(item)
+                && (storageSearchText.isEmpty
+                    || item.title.localizedCaseInsensitiveContains(storageSearchText)
+                    || item.explanation.localizedCaseInsensitiveContains(storageSearchText)
+                    || item.tool.displayName.localizedCaseInsensitiveContains(storageSearchText))
+        }
+    }
+
+    var storageItemsForSelectedTool: [StorageItem] {
+        storageReport.items.filter(storageToolFilter.includes)
+    }
+
+    var selectedStorageTotalByteCount: Int64 {
+        storageItemsForSelectedTool.reduce(0) { $0 + $1.byteCount }
+    }
+
+    var selectedStorageDeletableByteCount: Int64 {
+        storageItemsForSelectedTool
+            .filter { $0.safety != .protected }
+            .reduce(0) { $0 + $1.byteCount }
+    }
+
+    func storageItems(for filter: StorageToolFilter) -> [StorageItem] {
+        storageReport.items.filter(filter.includes)
+    }
+
+    func storageTotalByteCount(for filter: StorageToolFilter) -> Int64 {
+        storageItems(for: filter).reduce(0) { $0 + $1.byteCount }
+    }
+
+    func storageDeletableByteCount(for filter: StorageToolFilter) -> Int64 {
+        storageItems(for: filter)
+            .filter { $0.safety != .protected }
+            .reduce(0) { $0 + $1.byteCount }
+    }
+
+    var selectedStorageItems: [StorageItem] {
+        storageReport.items.filter { selectedStorageItemIDs.contains($0.id) }
+    }
+
+    var eligibleSelectedStorageItems: [StorageItem] {
+        selectedStorageItems.filter { $0.safety != .protected }
+    }
+
     func reload() {
         let generation = UUID()
         scanGeneration = generation
@@ -64,8 +202,33 @@ final class SessionShelfStore: ObservableObject {
             guard scanGeneration == generation else { return }
             shelves = result
             isScanning = false
-            if selectedTool == nil { selectedTool = .codex }
+            if selectedDestination == nil { selectedDestination = .tool(.codex) }
             reconcileSelection(visibleSessions: selectedShelf?.sessions ?? [])
+        }
+    }
+
+    func reloadStorage() {
+        storageScanTask?.cancel()
+        let generation = UUID()
+        storageScanGeneration = generation
+        isScanningStorage = true
+        let storageRepository = storageRepository
+        storageScanTask = Task {
+            let worker = Task.detached(priority: .utility) {
+                storageRepository.scanAll {
+                    Task.isCancelled
+                }
+            }
+            let report = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard storageScanGeneration == generation else { return }
+            storageReport = report
+            isScanningStorage = false
+            reconcileStorageSelection(visibleItems: visibleStorageItems)
+            storageScanTask = nil
         }
     }
 
@@ -93,6 +256,18 @@ final class SessionShelfStore: ObservableObject {
         selectionState.clear()
         selectedSessionIDs.removeAll()
         setFocusedSession(nil)
+    }
+
+    func updateStorageSelection(_ ids: Set<String>, visibleItems: [StorageItem]) {
+        let focusedID = storageSelectionState.update(to: ids, orderedIDs: visibleItems.map(\.id))
+        selectedStorageItemIDs = storageSelectionState.selectedIDs
+        selectedStorageItem = visibleItems.first { $0.id == focusedID }
+    }
+
+    func reconcileStorageSelection(visibleItems: [StorageItem]) {
+        let focusedID = storageSelectionState.reconcile(orderedIDs: visibleItems.map(\.id))
+        selectedStorageItemIDs = storageSelectionState.selectedIDs
+        selectedStorageItem = visibleItems.first { $0.id == focusedID }
     }
 
     private func setFocusedSession(_ session: SessionSummary?) {
@@ -168,6 +343,64 @@ final class SessionShelfStore: ObservableObject {
         reload()
     }
 
+    func storageTrashCandidates(for item: StorageItem) -> [StorageItem] {
+        selectedStorageItemIDs.contains(item.id) ? selectedStorageItems : [item]
+    }
+
+    func requestStorageTrash(_ items: [StorageItem]) {
+        let unique = Dictionary(grouping: items, by: \.id).compactMap(\.value.first)
+        let request = StorageTrashRequest(items: unique)
+        guard !request.eligible.isEmpty else {
+            errorMessage = "選択した項目は保護されているため、ゴミ箱へ移せません"
+            return
+        }
+        storageTrashRequest = request
+    }
+
+    func requestStorageTrashForSelection() {
+        requestStorageTrash(selectedStorageItems)
+    }
+
+    func confirmStorageTrash(_ request: StorageTrashRequest) {
+        storageTrashRequest = nil
+        isDeletingStorage = true
+        storageScanTask?.cancel()
+        storageScanGeneration = UUID()
+        let storageRepository = storageRepository
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                var succeeded: Set<String> = []
+                var failures: [(StorageItem, String)] = []
+                for item in request.eligible {
+                    do {
+                        try storageRepository.moveToTrash(item)
+                        succeeded.insert(item.id)
+                    } catch {
+                        failures.append((item, error.localizedDescription))
+                    }
+                }
+                return (succeeded, failures)
+            }.value
+            if !result.0.isEmpty {
+                storageReport = StorageScanReport(
+                    items: storageReport.items.filter { !result.0.contains($0.id) },
+                    issues: storageReport.issues,
+                    wasCancelled: storageReport.wasCancelled
+                )
+                updateStorageSelection(
+                    selectedStorageItemIDs.subtracting(result.0),
+                    visibleItems: visibleStorageItems
+                )
+            }
+            if !result.1.isEmpty {
+                let examples = result.1.prefix(3).map { $0.0.title }.joined(separator: "、")
+                errorMessage = "\(result.1.count)件をゴミ箱へ移せませんでした: \(examples)"
+            }
+            isDeletingStorage = false
+            reloadStorage()
+        }
+    }
+
     private func removeFromShelves(ids: Set<String>) {
         shelves = shelves.map { shelf in
             let remaining = shelf.sessions.filter { !ids.contains($0.id) }
@@ -180,5 +413,17 @@ final class SessionShelfStore: ObservableObject {
                 sessions: remaining
             )
         }
+    }
+}
+
+private extension SidebarDestination {
+    var tool: AITool? {
+        if case .tool(let tool) = self { return tool }
+        return nil
+    }
+
+    var storageFilter: StorageToolFilter? {
+        if case .storage(let filter) = self { return filter }
+        return nil
     }
 }
