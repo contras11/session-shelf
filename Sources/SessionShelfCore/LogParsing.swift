@@ -41,6 +41,8 @@ enum LogParsing {
                 parseGrok(object, into: &result)
             case .cursorDesktop:
                 break
+            case .openCode:
+                break
             }
         }
         if lines.count > LogLimits.maximumEntries {

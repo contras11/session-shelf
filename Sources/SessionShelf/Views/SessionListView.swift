@@ -37,7 +37,7 @@ struct SessionListView: View {
                                 let eligibleCount = candidates.filter { $0.isSupported && !$0.isProtected }.count
                                 if eligibleCount > 0 {
                                     Button(
-                                        eligibleCount == 1 ? "ゴミ箱へ移す" : "\(eligibleCount)件をゴミ箱へ移す",
+                                        session.tool == .openCode ? (eligibleCount == 1 ? "完全に削除" : "\(eligibleCount)件を完全に削除") : (eligibleCount == 1 ? "ゴミ箱へ移す" : "\(eligibleCount)件をゴミ箱へ移す"),
                                         role: .destructive
                                     ) {
                                         store.requestTrash(candidates)

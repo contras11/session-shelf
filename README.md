@@ -4,7 +4,7 @@ Session Shelfは、AI開発ツールがローカルに保存した過去セッ�
 
 ## 主な機能
 
-- Codex、Claude Code、Cursor Desktop、Cursor CLI、Grok Build CLIを最上位で分けて表示
+- Codex、Claude Code、Cursor Desktop、Cursor CLI、Grok Build CLI、OpenCodeを最上位で分けて表示
 - セッション一覧にタイトル、更新日時、容量、関連プロジェクト、短い概要を表示
 - 詳細画面を「会話」「操作履歴」「変更したファイル」「生ログ」に分けて表示
 - CursorのプランMarkdownを閲覧
@@ -12,9 +12,9 @@ Session Shelfは、AI開発ツールがローカルに保存した過去セッ�
 - システム指示や実行環境は通常会話から分離し、必要なときだけ展開
 - タイトル・概要・プロジェクト名によるローカル検索
 - 対応する保存場所がない場合は「未検出」、場所はあるが読めない場合は「未対応の保存形式」と想定パス候補を表示
-- 対応済みの非アクティブなセッションをmacOSのゴミ箱へ移動
-- 5ツールのキャッシュ、一時ファイル、生成物、診断記録を用途と安全度ごとに可視化
-- ストレージ画面の固定タイルから、各ツールの容量と整理候補へ直接切り替え
+- 対応済みの非アクティブなセッションをmacOSのゴミ箱へ移動（OpenCodeは公式CLIによる不可逆削除）
+- 6ツールのキャッシュ、一時ファイル、生成物、診断記録を用途と安全度ごとに可視化
+- サイドバーのストレージ配下から、各ツールの容量と整理候補へ切り替え
 - 「再生成可能」「要確認」「保護」の3段階で影響を説明し、確認後に安全な項目をゴミ箱へ移動
 
 ## ローカル性と安全性
@@ -22,7 +22,7 @@ Session Shelfは、AI開発ツールがローカルに保存した過去セッ�
 - ログの読み取り、検索、概要生成はすべてMac内で完結します。
 - 外部通信、クラウド要約、解析APIへの送信は行いません。
 - 元ログをこのプロジェクトへコピーしません。画面表示時に保存元を読み取り専用で開きます。
-- 削除操作は完全削除ではなく、macOSのゴミ箱への移動だけです。
+- 通常5ツールの削除はmacOSのゴミ箱へ移動します。OpenCodeだけは専用警告後、公式CLIでゴミ箱を経由せず完全削除します。
 - 移動前に確認を表示し、保存場所の外にあるファイルは拒否します。
 - ストレージ整理は既知の保存場所だけを対象にし、削除直前に容量・更新日時・安全判定を再確認します。
 - シンボリックリンク、更新から30分以内の項目、用途を確認できない項目は保護します。
@@ -36,12 +36,17 @@ Session Shelfは、AI開発ツールがローカルに保存した過去セッ�
 | Cursor Desktop | `~/.cursor/plans`のプランMarkdown。Desktop内部SQLiteは検出のみ |
 | Cursor CLI | `~/.cursor/projects/*/agent-transcripts`のJSONL。`~/.cursor/chats`の内部SQLiteは検出のみ |
 | Grok Build CLI | `~/.grok/sessions`のセッションディレクトリ、要約、会話JSONL、プランMarkdown |
+| OpenCode | `~/.local/share/opencode/opencode.db`（session/message/partのみ読み取り） |
 
 保存形式は各ツールの公開契約ではないため、形式が変わったログは安全側に倒して「未対応の保存形式」と表示します。
 
 ## 保護対象
 
 次の項目はゴミ箱へ移す対象にしません。
+
+OpenCodeの「完全に削除」はゴミ箱を経由せず、公式CLI `opencode session delete <ID>` を実行します。削除直前に存在・更新時刻・圧縮状態を再確認し、CLIがない場合や状態が変わった場合は実行しません。
+
+OpenCodeのストレージは`~/.local/share/opencode`、`~/.local/state/opencode`、`~/.cache/opencode`、`~/.config/opencode`を対象に可視化します。cacheの既知項目は再生成可能、shareのlog・tool-outputとstateのprompt-historyは要確認、DB・auth・config・未知形式は保護対象です。
 
 - 更新から30分以内で、作業中の可能性があるセッション
 - Cursorの内部SQLiteなど、設定・認証・状態データを含む可能性がある保存物

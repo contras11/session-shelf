@@ -1,13 +1,16 @@
 import AppKit
 import Foundation
+import CSQLite3
 
 public struct SessionRepository: @unchecked Sendable {
     public let homeDirectory: URL
     private let fileManager: FileManager
+    private let openCodeExecutables: [URL]
 
-    public init(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) {
+    public init(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser, openCodeExecutables: [URL]? = nil) {
         self.homeDirectory = homeDirectory.standardizedFileURL
         self.fileManager = .default
+        self.openCodeExecutables = openCodeExecutables ?? ["/opt/homebrew/bin/opencode", "/usr/local/bin/opencode", "/opt/local/bin/opencode"].map(URL.init(fileURLWithPath:))
     }
 
     public func scanAll() -> [ToolShelf] {
@@ -21,6 +24,7 @@ public struct SessionRepository: @unchecked Sendable {
         case .cursorDesktop: scanCursorDesktop()
         case .cursorCLI: scanCursorCLI()
         case .grokBuildCLI: scanGrok()
+        case .openCode: scanOpenCode()
         }
     }
 
@@ -34,10 +38,12 @@ public struct SessionRepository: @unchecked Sendable {
             parsed = try LogParsing.parseMarkdown(at: session.sourceURL)
         case (.grokBuildCLI, _):
             parsed = try LogParsing.parseGrokDirectory(session.sourceURL)
+        case (.openCode, _):
+            parsed = try OpenCodeRepository.loadDetail(session: session)
         default:
             parsed = try LogParsing.parseJSONL(at: session.sourceURL, tool: session.tool)
         }
-        let raw = try LogParsing.rawText(for: session)
+        let raw: (String, Bool) = session.tool == .openCode ? (try OpenCodeRepository.raw(session: session), false) : (try LogParsing.rawText(for: session))
         return SessionDetail(
             conversation: parsed.conversation,
             operations: parsed.operations,
@@ -49,6 +55,7 @@ public struct SessionRepository: @unchecked Sendable {
     }
 
     public func moveToTrash(_ session: SessionSummary) throws {
+        guard session.tool != .openCode else { throw SessionShelfError.protectedItem("OpenCodeは公式CLIによる完全削除のみ対応しています") }
         if session.isProtected {
             throw SessionShelfError.protectedItem(session.protectionReason ?? "作業中または設定データ")
         }
@@ -57,6 +64,13 @@ public struct SessionRepository: @unchecked Sendable {
         }
         var resultingURL: NSURL?
         try fileManager.trashItem(at: session.deletionURL, resultingItemURL: &resultingURL)
+    }
+
+    public func delete(_ session: SessionSummary, mode: SessionDeletionMode) throws {
+        guard mode == session.deletionMode else { throw SessionShelfError.protectedItem("削除対象の状態が変わりました") }
+        guard session.tool == .openCode, case .openCodeCLI(let id) = mode else { return try moveToTrash(session) }
+        let db = session.sourceURL
+        try OpenCodeRepository.delete(sessionID: id, database: db, expectedUpdated: session.date, executables: openCodeExecutables)
     }
 
     public func candidatePaths(for tool: AITool) -> [String] {
@@ -72,6 +86,8 @@ public struct SessionRepository: @unchecked Sendable {
             ["\(home)/.cursor/projects/*/agent-transcripts", "\(home)/.cursor/chats"]
         case .grokBuildCLI:
             ["\(home)/.grok/sessions"]
+        case .openCode:
+            ["\(home)/.local/share/opencode/opencode.db"]
         }
     }
 
@@ -209,6 +225,13 @@ public struct SessionRepository: @unchecked Sendable {
             enumerator?.skipDescendants()
         }
         return shelf(.grokBuildCLI, sessions: sessions)
+    }
+
+    private func scanOpenCode() -> ToolShelf {
+        let db = homeDirectory.appendingPathComponent(".local/share/opencode/opencode.db")
+        guard exists(db) else { return shelf(.openCode, sessions: []) }
+        do { return shelf(.openCode, sessions: try OpenCodeRepository.scan(database: db)) }
+        catch { return ToolShelf(tool: .openCode, status: .unsupportedFormat(details: "OpenCode DBを安全に読み取れませんでした"), candidatePaths: candidatePaths(for: .openCode), sessions: []) }
     }
 
     private func makeJSONSummary(at url: URL, tool: AITool, activeProtection: Bool) -> SessionSummary {
@@ -364,6 +387,8 @@ public struct SessionRepository: @unchecked Sendable {
             roots = [homeDirectory.appendingPathComponent(".cursor/projects")]
         case .grokBuildCLI:
             roots = [homeDirectory.appendingPathComponent(".grok/sessions")]
+        case .openCode:
+            return false
         }
         return roots.contains { root in
             let base = root.standardizedFileURL.path + "/"

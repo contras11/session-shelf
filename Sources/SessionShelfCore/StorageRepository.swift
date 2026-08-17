@@ -40,7 +40,7 @@ public struct StorageRepository: @unchecked Sendable {
 
         for tool in AITool.allCases {
             if shouldCancel() { return StorageScanReport(items: items, issues: issues, wasCancelled: true) }
-            let root = storageRoot(for: tool)
+            for root in storageRoots(for: tool) {
             guard fileManager.fileExists(atPath: root.path) else { continue }
             for candidate in candidates(in: root, tool: tool) {
                 if shouldCancel() { return StorageScanReport(items: items, issues: issues, wasCancelled: true) }
@@ -49,7 +49,7 @@ public struct StorageRepository: @unchecked Sendable {
                 if let issue = measurement.issue {
                     issues.append(StorageScanIssue(path: candidate.path, message: issue))
                 }
-                let relativePath = relativePath(of: candidate, under: root)
+                let relativePath = policyRelativePath(of: candidate, under: root, tool: tool)
                 var classification = StoragePolicy.classify(
                     tool: tool,
                     relativePath: relativePath,
@@ -86,6 +86,7 @@ public struct StorageRepository: @unchecked Sendable {
                     containsSymbolicLink: measurement.containsSymbolicLink
                 ))
             }
+            }
         }
 
         return StorageScanReport(
@@ -101,7 +102,8 @@ public struct StorageRepository: @unchecked Sendable {
         guard item.safety != .protected else {
             throw SessionShelfError.protectedItem(item.safetyReason)
         }
-        let root = storageRoot(for: item.tool)
+        let root = storageRoots(for: item.tool).first { isStrictDescendant(item.location, of: $0) }
+        guard let root else { throw SessionShelfError.outsideAllowedLocation }
         guard isStrictDescendant(item.location, of: root), !isToolRoot(item.location) else {
             throw SessionShelfError.outsideAllowedLocation
         }
@@ -111,7 +113,7 @@ public struct StorageRepository: @unchecked Sendable {
         }
         let current = StoragePolicy.classify(
             tool: item.tool,
-            relativePath: relativePath(of: item.location, under: root),
+            relativePath: policyRelativePath(of: item.location, under: root, tool: item.tool),
             url: item.location,
             modifiedAt: measurement.modifiedAt,
             containsSymbolicLink: measurement.containsSymbolicLink,
@@ -138,7 +140,18 @@ public struct StorageRepository: @unchecked Sendable {
         case .claudeCode: homeDirectory.appendingPathComponent(".claude", isDirectory: true)
         case .cursorDesktop, .cursorCLI: homeDirectory.appendingPathComponent(".cursor", isDirectory: true)
         case .grokBuildCLI: homeDirectory.appendingPathComponent(".grok", isDirectory: true)
+        case .openCode: homeDirectory.appendingPathComponent(".local/share/opencode", isDirectory: true)
         }
+    }
+
+    private func storageRoots(for tool: AITool) -> [URL] {
+        guard tool == .openCode else { return [storageRoot(for: tool)] }
+        return [
+            homeDirectory.appendingPathComponent(".local/share/opencode"),
+            homeDirectory.appendingPathComponent(".local/state/opencode"),
+            homeDirectory.appendingPathComponent(".cache/opencode"),
+            homeDirectory.appendingPathComponent(".config/opencode")
+        ]
     }
 
     private func candidates(in root: URL, tool: AITool) -> [URL] {
@@ -276,7 +289,14 @@ public struct StorageRepository: @unchecked Sendable {
     }
 
     private func isToolRoot(_ url: URL) -> Bool {
-        AITool.allCases.contains { storageRoot(for: $0).standardizedFileURL == url.standardizedFileURL }
+        AITool.allCases.flatMap(storageRoots).contains { $0.standardizedFileURL == url.standardizedFileURL }
+    }
+
+    private func policyRelativePath(of url: URL, under root: URL, tool: AITool) -> String {
+        let path = relativePath(of: url, under: root)
+        guard tool == .openCode else { return path }
+        let prefix = root.path.contains("/.cache/") ? "cache" : (root.path.contains("/.config/") ? "config" : (root.path.contains("/.local/state/") ? "state" : "share"))
+        return "\(prefix)/\(path)"
     }
 }
 
@@ -319,6 +339,10 @@ enum StoragePolicy {
                 homeDirectory: homeDirectory,
                 fileManager: fileManager
             )
+        case .openCode:
+            if path.hasPrefix("cache/") && ["node_modules", "bin", "models.json"].contains(name) { return regeneratable(.cache, title: "OpenCodeキャッシュ", explanation: "OpenCodeが再生成できるキャッシュです。") }
+            if path.contains("/log") || path.hasPrefix("log") || path.contains("tool-output") || path.hasSuffix("prompt-history.jsonl") { return review(.diagnostic, title: "OpenCode記録", explanation: "再生成できない可能性がある記録です。", impact: "履歴や診断情報を失う可能性があります。") }
+            return protectedCategory(for: path, name: name)
         }
     }
 

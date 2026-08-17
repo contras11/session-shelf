@@ -306,7 +306,7 @@ final class SessionShelfStore: ObservableObject {
         let unique = Dictionary(grouping: sessions, by: \.id).compactMap(\.value.first)
         let request = TrashRequest(sessions: unique)
         guard !request.eligible.isEmpty else {
-            errorMessage = "選択したログは保護中または未対応のため、ゴミ箱へ移せません"
+            errorMessage = unique.contains { $0.tool == .openCode } ? "選択したOpenCodeは完全に削除できません" : "選択したログは保護中または未対応のため、ゴミ箱へ移せません"
             return
         }
         trashRequest = request
@@ -323,7 +323,7 @@ final class SessionShelfStore: ObservableObject {
 
         for session in request.eligible {
             do {
-                try repository.moveToTrash(session)
+                try repository.delete(session, mode: session.deletionMode)
                 succeeded.insert(session.id)
             } catch {
                 failures.append((session, error))
@@ -338,7 +338,7 @@ final class SessionShelfStore: ObservableObject {
 
         if !failures.isEmpty {
             let examples = failures.prefix(3).map { $0.0.title }.joined(separator: "、")
-            errorMessage = "\(failures.count)件をゴミ箱へ移せませんでした: \(examples)"
+            errorMessage = request.sessions.contains { $0.tool == .openCode } ? "\(failures.count)件を完全に削除できませんでした: \(examples)" : "\(failures.count)件をゴミ箱へ移せませんでした: \(examples)"
         }
         reload()
     }

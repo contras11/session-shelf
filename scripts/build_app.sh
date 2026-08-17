@@ -7,7 +7,7 @@ contents="$bundle_root/Contents"
 macos_dir="$contents/MacOS"
 resources_dir="$contents/Resources"
 iconset_dir="$project_root/.build/SessionShelf.iconset"
-master_icon="$project_root/.build/AppIcon-1024.png"
+master_icon="$project_root/Resources/AppIcon-1024.png"
 
 if [[ "$bundle_root" != "$project_root/dist/Session Shelf.app" ]]; then
     print -u2 "予期しないバンドル出力先です"
@@ -16,14 +16,17 @@ fi
 
 swift build -c release --product SessionShelf
 
+if [[ ! -f "$master_icon" ]]; then
+    print -u2 "Resources/AppIcon-1024.png がありません。固定原画を配置してから再実行してください"
+    exit 3
+fi
+
 rm -rf "$bundle_root" "$iconset_dir"
 mkdir -p "$macos_dir" "$resources_dir" "$iconset_dir"
 
 cp "$project_root/.build/release/SessionShelf" "$macos_dir/SessionShelf"
 chmod 755 "$macos_dir/SessionShelf"
 cp "$project_root/Resources/Info.plist" "$contents/Info.plist"
-
-swift "$project_root/scripts/generate_icon.swift" "$master_icon"
 
 for specification in \
     "16 icon_16x16.png" \

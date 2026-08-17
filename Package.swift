@@ -9,14 +9,15 @@ let package = Package(
         .library(name: "SessionShelfCore", targets: ["SessionShelfCore"])
     ],
     targets: [
-        .target(name: "SessionShelfCore"),
+        .systemLibrary(name: "CSQLite3", path: "Sources/CSQLite3"),
+        .target(name: "SessionShelfCore", dependencies: ["CSQLite3"]),
         .executableTarget(
             name: "SessionShelf",
             dependencies: ["SessionShelfCore"]
         ),
         .executableTarget(
             name: "SessionShelfChecks",
-            dependencies: ["SessionShelfCore"],
+            dependencies: ["SessionShelfCore", "CSQLite3"],
             path: "Tests/SessionShelfChecks"
         )
     ]

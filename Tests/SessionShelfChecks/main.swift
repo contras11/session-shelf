@@ -1,5 +1,6 @@
 import Foundation
 import SessionShelfCore
+import CSQLite3
 
 enum CheckFailure: Error, CustomStringConvertible {
     case failed(String)
@@ -28,6 +29,10 @@ struct SessionShelfChecks {
         try checkStorageClassification(); completed += 1
         try checkStorageDeletionGuards(); completed += 1
         try checkStorageCancellation(); completed += 1
+        try checkOpenCodeSQLiteFixture(); completed += 1
+        try checkOpenCodeSchemaFallback(); completed += 1
+        try checkOpenCodeDeletionBoundaries(); completed += 1
+        try checkOpenCodeStorageBoundaries(); completed += 1
         print("Session Shelf: \(completed)件の検証に成功")
     }
 
@@ -48,6 +53,128 @@ struct SessionShelfChecks {
             print("\(tool.displayName)ストレージ: \(bytes.formatted(.byteCount(style: .file)))、整理候補\(deletable)件")
         }
         print("ストレージ確認エラー: \(storage.issues.count)件")
+    }
+
+    private static func checkOpenCodeSQLiteFixture() throws {
+        try withTemporaryHome { home in
+            let db = home.appendingPathComponent(".local/share/opencode/opencode.db")
+            try createOpenCodeDB(db, sql: "CREATE TABLE session(id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, slug TEXT, directory TEXT, title TEXT, version TEXT, time_created INTEGER, time_updated INTEGER, time_compacting INTEGER, time_archived INTEGER); CREATE TABLE message(id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT); CREATE TABLE part(id TEXT, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT); INSERT INTO session VALUES('s1','p1',NULL,'fixture','/tmp/project','匿名fixture','1',1000,1000,NULL,NULL); INSERT INTO message VALUES('m1','s1',1000,1000,'{\"role\":\"user\"}'); INSERT INTO part VALUES('p1','m1','s1',1000,1000,'{\"type\":\"text\",\"text\":\"匿名本文\"}');")
+            let shelf = SessionRepository(homeDirectory: home).scan(.openCode)
+            try require(shelf.sessions.count == 1 && shelf.sessions[0].title == "匿名fixture", "OpenCode匿名fixture一覧を読めない")
+            try appendOpenCodeToolRows(db)
+            let detail = try SessionRepository(homeDirectory: home).loadDetail(for: shelf.sessions[0])
+            try require(detail.conversation.first?.text == "匿名本文", "OpenCode本文を読めない")
+            try require(detail.operations.contains { $0.result == .success } && detail.operations.contains { $0.result == .failure }, "OpenCode tool結果を正規化できない")
+            try require(detail.changedFiles.contains { $0.path == "/tmp/anonymous.txt" }, "OpenCode変更ファイルを抽出できない")
+            try require(!(try OpenCodeRepository.raw(session: shelf.sessions[0])).contains("sentinel"), "他セッションのrawが混入")
+            let kinds = detail.conversation.map { entry -> String in
+                switch entry.kind { case .toolCall(let name): return "call:\(name):\(entry.text)"; case .toolResult(let result): return "result:\(result.rawValue):\(entry.text)"; default: return "other" }
+            }
+            try require(kinds.contains { $0.contains("call:write") && $0.contains("anonymous.txt") }, "tool call本文不正")
+            try require(kinds.contains { $0.contains("result:成功") && $0.contains("ok") } && kinds.contains { $0.contains("result:失敗") && $0.contains("failed") }, "tool result本文不正")
+            let controlCalls = detail.conversation.compactMap { entry -> String? in if case .toolCall(let name) = entry.kind { return name }; return nil }
+            try require(Array(controlCalls.suffix(3)) == ["skill", "glob", "grep"], "制御列tool順序不正: \(controlCalls.joined(separator: ","))")
+            try require(detail.conversation.contains { $0.kind == .message && $0.text == "確認します。" }, "assistant本文の制御列分離不正")
+            try require(detail.conversation.filter { $0.speaker == .assistant }.allSatisfy { !$0.text.contains("❺") && !$0.text.contains("noneauta") && !$0.text.contains("<|eos|>") }, "制御記号が本文に残存")
+        }
+    }
+
+    private static func checkOpenCodeSchemaFallback() throws {
+        try withTemporaryHome { home in
+            let db = home.appendingPathComponent(".local/share/opencode/opencode.db")
+            try createOpenCodeDB(db, sql: "CREATE TABLE session(id TEXT);")
+            let shelf = SessionRepository(homeDirectory: home).scan(.openCode)
+            if case .unsupportedFormat = shelf.status {} else { throw CheckFailure.failed("OpenCode欠損schemaを保護できない") }
+        }
+    }
+
+    private static func checkOpenCodeDeletionBoundaries() throws {
+        try withTemporaryHome { home in
+            let db = home.appendingPathComponent(".local/share/opencode/opencode.db")
+            try createOpenCodeDB(db, sql: "CREATE TABLE session(id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, slug TEXT, directory TEXT, title TEXT, version TEXT, time_created INTEGER, time_updated INTEGER, time_compacting INTEGER, time_archived INTEGER); CREATE TABLE message(id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT); CREATE TABLE part(id TEXT, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT); INSERT INTO session VALUES('delete-me','p',NULL,'s','/tmp','匿名削除','1',1000,1000,NULL,NULL);")
+            let record = home.appendingPathComponent("args")
+            let cli = home.appendingPathComponent("opencode")
+            try write("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"\(record.path)\"\nexit 0\n", to: cli)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli.path)
+            let repository = SessionRepository(homeDirectory: home, openCodeExecutables: [cli])
+            let session = try requireValue(repository.scan(.openCode).sessions.first, "削除fixture一覧なし")
+            try repository.delete(session, mode: session.deletionMode)
+            let args = try String(contentsOf: record)
+            try require(args.contains("session\n") && args.contains("delete\n") && args.contains("delete-me\n"), "偽CLI引数が不正")
+            try requireThrows { try repository.delete(session, mode: .openCodeCLI(sessionID: "other")) }
+            try require(String(contentsOf: record) == args, "不一致IDでCLI記録が変化")
+            try requireThrows { try repository.moveToTrash(session) }
+            try requireThrows { try SessionRepository(homeDirectory: home, openCodeExecutables: []).delete(session, mode: session.deletionMode) }
+            try updateOpenCode(db, sql: "UPDATE session SET time_updated=2000")
+            try requireThrows { try repository.delete(session, mode: session.deletionMode) }
+            try updateOpenCode(db, sql: "UPDATE session SET time_updated=1000, time_compacting=NULL")
+            try write("#!/bin/sh\nexit 7\n", to: cli)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli.path)
+            let refreshed = try requireValue(repository.scan(.openCode).sessions.first, "削除fixture再取得失敗")
+            try requireThrows { try repository.delete(refreshed, mode: refreshed.deletionMode) }
+            try updateOpenCode(db, sql: "UPDATE session SET time_updated=1000, time_compacting=1")
+            let compacting = try requireValue(repository.scan(.openCode).sessions.first, "compacting fixture再取得失敗")
+            try requireThrows { try repository.delete(compacting, mode: compacting.deletionMode) }
+            let recent = Int(Date().timeIntervalSince1970 * 1000) - 60_000
+            try updateOpenCode(db, sql: "UPDATE session SET time_updated=\(recent), time_compacting=NULL")
+            let recentSession = try requireValue(repository.scan(.openCode).sessions.first, "recent fixture再取得失敗")
+            try requireThrows { try repository.delete(recentSession, mode: recentSession.deletionMode) }
+        }
+    }
+
+    private static func checkOpenCodeStorageBoundaries() throws {
+        try withTemporaryHome { home in
+            let now = Date(timeIntervalSince1970: 2_000_000)
+            let base = home.appendingPathComponent(".local/share/opencode")
+            try write("cache", to: home.appendingPathComponent(".cache/opencode/models.json"))
+            try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-3600)], ofItemAtPath: home.appendingPathComponent(".cache/opencode/models.json").path)
+            try write("log", to: base.appendingPathComponent("log/run.log"))
+            try write("tool", to: base.appendingPathComponent("tool-output/out.txt"))
+            try write("prompt", to: home.appendingPathComponent(".local/state/opencode/prompt-history.jsonl"))
+            try write("db", to: base.appendingPathComponent("opencode.db"))
+            try write("auth", to: home.appendingPathComponent(".config/opencode/auth.json"))
+            try write("unknown", to: base.appendingPathComponent("mystery.bin"))
+            for path in [base.appendingPathComponent("log"), base.appendingPathComponent("log/run.log"), base.appendingPathComponent("tool-output"), base.appendingPathComponent("tool-output/out.txt"), home.appendingPathComponent(".local/state/opencode/prompt-history.jsonl"), base.appendingPathComponent("opencode.db"), home.appendingPathComponent(".config/opencode/auth.json"), base.appendingPathComponent("mystery.bin")] { try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-3600)], ofItemAtPath: path.path) }
+            try write("bin", to: home.appendingPathComponent(".cache/opencode/bin/file")); try write("node", to: home.appendingPathComponent(".cache/opencode/node_modules/file"))
+            for path in [home.appendingPathComponent(".cache/opencode/bin"), home.appendingPathComponent(".cache/opencode/bin/file")] { try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-1799)], ofItemAtPath: path.path) }
+            for path in [home.appendingPathComponent(".cache/opencode/node_modules"), home.appendingPathComponent(".cache/opencode/node_modules/file")] { try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-1800)], ofItemAtPath: path.path) }
+            try FileManager.default.createSymbolicLink(at: home.appendingPathComponent(".cache/opencode/link"), withDestinationURL: home.appendingPathComponent(".cache/opencode/models.json"))
+            let report = StorageRepository(homeDirectory: home, now: { now }).scanAll()
+            let item = { (suffix: String) -> StorageItem? in report.items.first { $0.location.path.hasSuffix(suffix) } }
+            try require(item("bin")?.safety == .protected && item("node_modules")?.safety == .regeneratable && item("link")?.safety == .protected, "OpenCode cache境界分類不正")
+            for root in [home.appendingPathComponent(".local/share/opencode"), home.appendingPathComponent(".local/state/opencode"), home.appendingPathComponent(".cache/opencode"), home.appendingPathComponent(".config/opencode")] { try require(!report.items.contains { $0.location.standardizedFileURL == root.standardizedFileURL }, "OpenCode root自体が候補") }
+            try require(item("models.json")?.safety == .regeneratable, "OpenCode cache分類不正")
+            try require(item("log")?.safety == .reviewRequired && item("tool-output")?.safety == .reviewRequired && item("prompt-history.jsonl")?.safety == .reviewRequired, "OpenCode記録分類不正")
+            try require(item("opencode.db")?.safety == .protected && item("auth.json")?.safety == .protected && item("mystery.bin")?.safety == .protected, "OpenCode保護分類不正")
+            if let cache = item("models.json") {
+                let repository = StorageRepository(homeDirectory: home, now: { now })
+                try repository.moveToTrash(cache)
+                try require(!FileManager.default.fileExists(atPath: cache.location.path), "OpenCode cacheをゴミ箱へ移せない")
+            } else { throw CheckFailure.failed("OpenCode cache fixture不足") }
+            let outside = StorageItem(id: "outside", tool: .openCode, category: .cache, safety: .regeneratable, title: "outside", explanation: "", deletionImpact: "", safetyReason: "", byteCount: 1, fileCount: 1, modifiedAt: now, location: home.appendingPathComponent("outside"))
+            try requireThrows { try StorageRepository(homeDirectory: home, now: { now }).moveToTrash(outside) }
+        }
+    }
+
+    private static func updateOpenCode(_ url: URL, sql: String) throws {
+        var db: OpaquePointer?; guard sqlite3_open(url.path, &db) == SQLITE_OK else { throw CheckFailure.failed("fixture更新失敗") }; defer { sqlite3_close(db) }
+        guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw CheckFailure.failed("fixture更新SQL失敗") }
+    }
+
+    private static func createOpenCodeDB(_ url: URL, sql: String) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        var db: OpaquePointer?
+        guard sqlite3_open(url.path, &db) == SQLITE_OK else { throw CheckFailure.failed("fixture DB作成失敗") }
+        defer { sqlite3_close(db) }
+        guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw CheckFailure.failed("fixture SQL失敗") }
+    }
+
+    private static func appendOpenCodeToolRows(_ url: URL) throws {
+        var db: OpaquePointer?
+        guard sqlite3_open(url.path, &db) == SQLITE_OK else { throw CheckFailure.failed("fixture再接続失敗") }
+        defer { sqlite3_close(db) }
+        let sql = "INSERT INTO message VALUES('m2','s1',1001,1001,'{\"role\":\"assistant\"}'); INSERT INTO part VALUES('p2','m2','s1',1001,1001,'{\"type\":\"tool\",\"tool\":\"write\",\"state\":{\"status\":\"completed\",\"input\":{\"path\":\"/tmp/anonymous.txt\",\"content\":\"匿名\"},\"output\":\"ok\"}}'); INSERT INTO part VALUES('p3','m2','s1',1002,1002,'{\"type\":\"tool\",\"tool\":\"patch\",\"state\":{\"status\":\"error\",\"input\":{\"file_path\":\"/tmp/anonymous.txt\"},\"output\":\"failed\"}}'); INSERT INTO message VALUES('m3','s1',1003,1003,'{\"role\":\"assistant\"}'); INSERT INTO part VALUES('p4','m3','s1',1003,1003,'{\"type\":\"text\",\"text\":\"確認します。01❺skill noneautacustomize-opencode12❺glob noneauta**/sample.json* none/tmp13❺grep none/tmp pattern<|eos|>\"}');"
+        guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw CheckFailure.failed("tool fixture投入失敗") }
     }
 
     private static func checkCodex() throws {
@@ -612,5 +739,10 @@ struct SessionShelfChecks {
     private static func requireValue<T>(_ value: T?, _ message: String) throws -> T {
         guard let value else { throw CheckFailure.failed(message) }
         return value
+    }
+
+    private static func requireThrows(_ body: () throws -> Void) throws {
+        do { try body() } catch { return }
+        throw CheckFailure.failed("失敗すべき操作が成功")
     }
 }

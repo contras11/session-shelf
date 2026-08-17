@@ -17,6 +17,7 @@ enum Theme {
         case .cursorDesktop: .blue
         case .cursorCLI: .indigo
         case .grokBuildCLI: .purple
+        case .openCode: .teal
         }
     }
 

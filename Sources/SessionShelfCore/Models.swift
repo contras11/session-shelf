@@ -6,6 +6,7 @@ public enum AITool: String, CaseIterable, Identifiable, Codable, Sendable {
     case cursorDesktop
     case cursorCLI
     case grokBuildCLI
+    case openCode
 
     public var id: String { rawValue }
 
@@ -16,6 +17,7 @@ public enum AITool: String, CaseIterable, Identifiable, Codable, Sendable {
         case .cursorDesktop: "Cursor Desktop"
         case .cursorCLI: "Cursor CLI"
         case .grokBuildCLI: "Grok Build CLI"
+        case .openCode: "OpenCode"
         }
     }
 
@@ -26,6 +28,7 @@ public enum AITool: String, CaseIterable, Identifiable, Codable, Sendable {
         case .cursorDesktop: "cursorarrow.rays"
         case .cursorCLI: "chevron.left.forwardslash.chevron.right"
         case .grokBuildCLI: "hammer"
+        case .openCode: "terminal.fill"
         }
     }
 }
@@ -183,6 +186,11 @@ public enum SessionKind: String, Sendable {
     case plan = "プラン"
 }
 
+public enum SessionDeletionMode: Sendable, Equatable, Hashable {
+    case moveToTrash
+    case openCodeCLI(sessionID: String)
+}
+
 public struct SessionSummary: Identifiable, Hashable, Sendable {
     public let id: String
     public let tool: AITool
@@ -197,6 +205,7 @@ public struct SessionSummary: Identifiable, Hashable, Sendable {
     public let isSupported: Bool
     public let isProtected: Bool
     public let protectionReason: String?
+    public let deletionMode: SessionDeletionMode
 
     public init(
         id: String,
@@ -212,6 +221,7 @@ public struct SessionSummary: Identifiable, Hashable, Sendable {
         isSupported: Bool = true,
         isProtected: Bool = false,
         protectionReason: String? = nil
+        , deletionMode: SessionDeletionMode? = nil
     ) {
         self.id = id
         self.tool = tool
@@ -226,6 +236,7 @@ public struct SessionSummary: Identifiable, Hashable, Sendable {
         self.isSupported = isSupported
         self.isProtected = isProtected
         self.protectionReason = protectionReason
+        self.deletionMode = deletionMode ?? (tool == .openCode ? .openCodeCLI(sessionID: id.replacingOccurrences(of: "opencode:", with: "")) : .moveToTrash)
     }
 }
 

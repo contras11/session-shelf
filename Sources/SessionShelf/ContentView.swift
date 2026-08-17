@@ -75,16 +75,19 @@ struct ContentView: View {
 
     private var trashDialogTitle: String {
         guard let request = store.trashRequest else { return "ゴミ箱へ移しますか？" }
+        if request.sessions.contains(where: { $0.tool == .openCode }) { return "OpenCodeセッションを完全に削除しますか？" }
         return request.sessions.count == 1
             ? "このセッションをゴミ箱へ移しますか？"
             : "選択した\(request.sessions.count)件をゴミ箱へ移しますか？"
     }
 
     private func trashButtonTitle(for request: TrashRequest) -> String {
-        request.eligible.count == 1 ? "ゴミ箱へ移す" : "\(request.eligible.count)件をゴミ箱へ移す"
+        if request.sessions.contains(where: { $0.tool == .openCode }) { return "完全に削除" }
+        return request.eligible.count == 1 ? "ゴミ箱へ移す" : "\(request.eligible.count)件をゴミ箱へ移す"
     }
 
     private func trashMessage(for request: TrashRequest) -> String {
+        if request.sessions.contains(where: { $0.tool == .openCode }) { return "ゴミ箱へ移らず復元できません。公式OpenCode CLIで完全に削除します。" }
         let recovery = "完全削除は行いません。macOSのゴミ箱から戻せます。"
         guard request.excludedCount > 0 else { return recovery }
         return "\(request.excludedCount)件は保護中または未対応のため除外します。\(recovery)"

@@ -81,9 +81,9 @@ struct SessionDetailView: View {
             Button(role: .destructive) {
                 store.requestTrashForSelection()
             } label: {
-                Label("\(store.eligibleSelectedSessions.count)件をゴミ箱へ", systemImage: "trash")
+                Label(store.eligibleSelectedSessions.contains { $0.tool == .openCode } ? "\(store.eligibleSelectedSessions.count)件を完全に削除" : "\(store.eligibleSelectedSessions.count)件をゴミ箱へ", systemImage: store.eligibleSelectedSessions.contains { $0.tool == .openCode } ? "trash.slash" : "trash")
             }
-            .help("選択中の削除可能なログをまとめてゴミ箱へ移します")
+            .help(store.eligibleSelectedSessions.contains { $0.tool == .openCode } ? "公式OpenCode CLIで完全に削除します。復元できません" : "選択中の削除可能なログをまとめてゴミ箱へ移します")
         } else if store.selectedSessionIDs.count > 1 {
             Label("削除できません", systemImage: "lock.fill")
                 .foregroundStyle(.orange)
@@ -96,7 +96,7 @@ struct SessionDetailView: View {
             Button(role: .destructive) {
                 store.requestTrash([session])
             } label: {
-                Label("ゴミ箱へ", systemImage: "trash")
+                Label(session.tool == .openCode ? "完全に削除" : "ゴミ箱へ", systemImage: session.tool == .openCode ? "trash.slash" : "trash")
             }
         }
     }
