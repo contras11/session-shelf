@@ -131,6 +131,17 @@ final class SessionShelfStore: ObservableObject {
         selectedDestination?.storageFilter ?? lastStorageToolFilter
     }
 
+    func reconcileSidebarSelection(visibleTools: [AITool]) {
+        switch selectedDestination {
+        case .tool(let tool) where !visibleTools.contains(tool):
+            selectedDestination = visibleTools.first.map(SidebarDestination.tool) ?? .storage(.all)
+        case .storage(.tool(let tool)) where !visibleTools.contains(tool):
+            selectedDestination = .storage(.all)
+        default:
+            break
+        }
+    }
+
     var selectedShelf: ToolShelf? {
         shelves.first { $0.tool == selectedTool }
     }

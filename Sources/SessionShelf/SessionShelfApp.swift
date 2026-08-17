@@ -2,9 +2,11 @@ import SwiftUI
 
 @main
 struct SessionShelfApp: App {
+    @StateObject private var sidebarPreferences = SidebarPreferences()
+
     var body: some Scene {
         WindowGroup("Session Shelf") {
-            ContentView()
+            ContentView(sidebarPreferences: sidebarPreferences)
                 .frame(minWidth: 980, minHeight: 640)
         }
         .windowResizability(.contentMinSize)
@@ -15,6 +17,10 @@ struct SessionShelfApp: App {
                 }
                 .keyboardShortcut("r", modifiers: [.command])
             }
+        }
+
+        Settings {
+            SidebarSettingsView(preferences: sidebarPreferences)
         }
     }
 }

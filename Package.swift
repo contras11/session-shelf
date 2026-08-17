@@ -13,12 +13,17 @@ let package = Package(
         .target(name: "SessionShelfCore", dependencies: ["CSQLite3"]),
         .executableTarget(
             name: "SessionShelf",
-            dependencies: ["SessionShelfCore"]
+            dependencies: ["SessionShelfCore"],
+            resources: [.process("Resources")]
         ),
         .executableTarget(
             name: "SessionShelfChecks",
             dependencies: ["SessionShelfCore", "CSQLite3"],
             path: "Tests/SessionShelfChecks"
+        ),
+        .testTarget(
+            name: "SessionShelfTests",
+            dependencies: ["SessionShelf"]
         )
     ]
 )

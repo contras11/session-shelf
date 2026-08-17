@@ -8,6 +8,7 @@ macos_dir="$contents/MacOS"
 resources_dir="$contents/Resources"
 iconset_dir="$project_root/.build/SessionShelf.iconset"
 master_icon="$project_root/Resources/AppIcon-1024.png"
+swift_resource_bundle="$project_root/.build/release/SessionShelf_SessionShelf.bundle"
 
 if [[ "$bundle_root" != "$project_root/dist/Session Shelf.app" ]]; then
     print -u2 "予期しないバンドル出力先です"
@@ -21,12 +22,18 @@ if [[ ! -f "$master_icon" ]]; then
     exit 3
 fi
 
+if [[ ! -d "$swift_resource_bundle" ]]; then
+    print -u2 "SwiftPMのサービスアイコンリソースがありません"
+    exit 4
+fi
+
 rm -rf "$bundle_root" "$iconset_dir"
 mkdir -p "$macos_dir" "$resources_dir" "$iconset_dir"
 
 cp "$project_root/.build/release/SessionShelf" "$macos_dir/SessionShelf"
 chmod 755 "$macos_dir/SessionShelf"
 cp "$project_root/Resources/Info.plist" "$contents/Info.plist"
+ditto "$swift_resource_bundle" "$resources_dir/SessionShelf_SessionShelf.bundle"
 
 for specification in \
     "16 icon_16x16.png" \

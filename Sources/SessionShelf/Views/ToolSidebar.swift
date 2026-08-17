@@ -3,12 +3,13 @@ import SwiftUI
 
 struct ToolSidebar: View {
     @ObservedObject var store: SessionShelfStore
+    @ObservedObject var preferences: SidebarPreferences
     @State private var isStorageExpanded = true
 
     var body: some View {
         List(selection: $store.selectedDestination) {
             Section("ツール") {
-                ForEach(AITool.allCases) { tool in
+                ForEach(preferences.visibleTools) { tool in
                     ToolRow(tool: tool, shelf: store.shelves.first { $0.tool == tool })
                         .tag(SidebarDestination.tool(tool))
                 }
@@ -16,7 +17,16 @@ struct ToolSidebar: View {
 
             Section("整理") {
                 DisclosureGroup(isExpanded: $isStorageExpanded) {
-                    ForEach(StorageToolFilter.allCases) { filter in
+                    StorageSidebarRow(
+                        filter: .all,
+                        totalByteCount: store.storageTotalByteCount(for: .all),
+                        deletableByteCount: store.storageDeletableByteCount(for: .all),
+                        isSelected: store.selectedDestination == .storage(.all)
+                    )
+                    .tag(SidebarDestination.storage(.all))
+
+                    ForEach(preferences.visibleTools) { tool in
+                        let filter = StorageToolFilter.tool(tool)
                         StorageSidebarRow(
                             filter: filter,
                             totalByteCount: store.storageTotalByteCount(for: filter),
@@ -62,7 +72,7 @@ private struct StorageSidebarRow: View {
     private var symbolName: String {
         switch filter {
         case .all: "square.grid.2x2"
-        case .tool(let tool): tool.symbolName
+        case .tool: ""
         }
     }
 
@@ -75,11 +85,17 @@ private struct StorageSidebarRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: symbolName)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.white)
-                .frame(width: 22, height: 22)
-                .background(tint.gradient, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            switch filter {
+            case .all:
+                Image(systemName: symbolName)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 22, height: 22)
+                    .background(tint.gradient, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .accessibilityHidden(true)
+            case .tool(let tool):
+                ToolIconView(tool: tool, size: 22)
+            }
             Text(filter.title)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
@@ -106,14 +122,7 @@ private struct ToolRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: tool.symbolName)
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.white)
-                .frame(width: Theme.Layout.iconTileSize, height: Theme.Layout.iconTileSize)
-                .background(
-                    Theme.toolColor(tool).gradient,
-                    in: RoundedRectangle(cornerRadius: Theme.Layout.iconTileCornerRadius, style: .continuous)
-                )
+            ToolIconView(tool: tool, size: Theme.Layout.iconTileSize)
             Text(tool.displayName)
                 .lineLimit(1)
             Spacer()

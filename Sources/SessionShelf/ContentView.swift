@@ -3,10 +3,11 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var store = SessionShelfStore()
+    @ObservedObject var sidebarPreferences: SidebarPreferences
 
     var body: some View {
         NavigationSplitView {
-            ToolSidebar(store: store)
+            ToolSidebar(store: store, preferences: sidebarPreferences)
                 .navigationSplitViewColumnWidth(min: 230, ideal: 260, max: 340)
         } content: {
             Group {
@@ -27,6 +28,10 @@ struct ContentView: View {
         .task {
             store.reload()
             store.reloadStorage()
+            store.reconcileSidebarSelection(visibleTools: sidebarPreferences.visibleTools)
+        }
+        .onChange(of: sidebarPreferences.visibleTools) { _, visibleTools in
+            store.reconcileSidebarSelection(visibleTools: visibleTools)
         }
         .onReceive(NotificationCenter.default.publisher(for: .sessionShelfReload)) { _ in
             store.reload()
