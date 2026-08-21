@@ -42,6 +42,7 @@ struct SessionListView: View {
                                     ) {
                                         store.requestTrash(candidates)
                                     }
+                                    .disabled(store.isDeletingSessions)
                                 }
                             }
                     }
@@ -57,7 +58,11 @@ struct SessionListView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                if store.isScanning {
+                if store.isDeletingSessions {
+                    ProgressView()
+                        .controlSize(.small)
+                        .help("セッションを削除しています")
+                } else if store.isScanning {
                     ProgressView()
                         .controlSize(.small)
                         .help("保存場所を再確認しています")

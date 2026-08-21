@@ -45,7 +45,7 @@ Session Shelfは、AI開発ツールがローカルに保存した過去セッ�
 
 次の項目はゴミ箱へ移す対象にしません。
 
-OpenCodeの「完全に削除」はゴミ箱を経由せず、公式CLI `opencode session delete <ID>` を実行します。削除直前に存在・更新時刻・圧縮状態を再確認し、CLIがない場合や状態が変わった場合は実行しません。
+OpenCodeの「完全に削除」はゴミ箱を経由せず、公式CLI `opencode session delete <ID>` を実行します。CLIは`PATH`を優先し、HomebrewとMacPortsの標準パスも確認します。空または相対的な`PATH`要素は使用しません。削除直前に存在・更新時刻・圧縮状態を再確認し、CLIがない場合や状態が変わった場合は実行しません。
 
 OpenCodeのストレージは`~/.local/share/opencode`、`~/.local/state/opencode`、`~/.cache/opencode`、`~/.config/opencode`を対象に可視化します。cacheの既知項目は再生成可能、shareのlog・tool-outputとstateのprompt-historyは要確認、DB・auth・config・未知形式は保護対象です。
 

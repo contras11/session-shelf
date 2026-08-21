@@ -74,6 +74,11 @@ struct StorageTrashRequest: Identifiable {
     var requiresStrongWarning: Bool { eligible.contains { $0.safety == .reviewRequired } }
 }
 
+private struct SessionDeletionResult: Sendable {
+    let succeeded: Set<String>
+    let failures: [(title: String, reason: String)]
+}
+
 @MainActor
 final class SessionShelfStore: ObservableObject {
     @Published var shelves: [ToolShelf] = []
@@ -105,11 +110,13 @@ final class SessionShelfStore: ObservableObject {
     @Published var selectedStorageItemIDs: Set<String> = []
     @Published var selectedStorageItem: StorageItem?
     @Published var storageTrashRequest: StorageTrashRequest?
+    @Published var isDeletingSessions = false
     @Published var isDeletingStorage = false
     @Published private(set) var lastStorageToolFilter: StorageToolFilter = .all
 
     private let repository: SessionRepository
     private let storageRepository: StorageRepository
+    private let deleteSession: @Sendable (SessionSummary, SessionDeletionMode) throws -> Void
     private var scanGeneration = UUID()
     private var storageScanGeneration = UUID()
     private var storageScanTask: Task<Void, Never>?
@@ -119,10 +126,14 @@ final class SessionShelfStore: ObservableObject {
 
     init(
         repository: SessionRepository = SessionRepository(),
-        storageRepository: StorageRepository = StorageRepository()
+        storageRepository: StorageRepository = StorageRepository(),
+        deleteSession: (@Sendable (SessionSummary, SessionDeletionMode) throws -> Void)? = nil
     ) {
         self.repository = repository
         self.storageRepository = storageRepository
+        self.deleteSession = deleteSession ?? { session, mode in
+            try repository.delete(session, mode: mode)
+        }
     }
 
     var selectedTool: AITool? { selectedDestination?.tool }
@@ -314,6 +325,7 @@ final class SessionShelfStore: ObservableObject {
     }
 
     func requestTrash(_ sessions: [SessionSummary]) {
+        guard !isDeletingSessions else { return }
         let unique = Dictionary(grouping: sessions, by: \.id).compactMap(\.value.first)
         let request = TrashRequest(sessions: unique)
         guard !request.eligible.isEmpty else {
@@ -328,30 +340,43 @@ final class SessionShelfStore: ObservableObject {
     }
 
     func confirmTrash(_ request: TrashRequest) {
+        guard !isDeletingSessions else { return }
         trashRequest = nil
-        var succeeded: Set<String> = []
-        var failures: [(SessionSummary, Error)] = []
+        isDeletingSessions = true
+        let deleteSession = deleteSession
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                var succeeded: Set<String> = []
+                var failures: [(title: String, reason: String)] = []
+                for session in request.eligible {
+                    do {
+                        try deleteSession(session, session.deletionMode)
+                        succeeded.insert(session.id)
+                    } catch {
+                        failures.append((session.title, Self.userFacingDeletionReason(for: error)))
+                    }
+                }
+                return SessionDeletionResult(succeeded: succeeded, failures: failures)
+            }.value
 
-        for session in request.eligible {
-            do {
-                try repository.delete(session, mode: session.deletionMode)
-                succeeded.insert(session.id)
-            } catch {
-                failures.append((session, error))
+            if !result.succeeded.isEmpty {
+                removeFromShelves(ids: result.succeeded)
+                let remainingSelection = selectedSessionIDs.subtracting(result.succeeded)
+                updateSelection(remainingSelection, visibleSessions: selectedShelf?.sessions ?? [])
             }
-        }
 
-        if !succeeded.isEmpty {
-            removeFromShelves(ids: succeeded)
-            let remainingSelection = selectedSessionIDs.subtracting(succeeded)
-            updateSelection(remainingSelection, visibleSessions: selectedShelf?.sessions ?? [])
+            if !result.failures.isEmpty {
+                let examples = result.failures.prefix(3)
+                    .map { "\($0.title)（\($0.reason)）" }
+                    .joined(separator: "、")
+                let action = request.sessions.contains { $0.tool == .openCode }
+                    ? "完全に削除できませんでした"
+                    : "ゴミ箱へ移せませんでした"
+                errorMessage = "\(result.failures.count)件を\(action): \(examples)"
+            }
+            isDeletingSessions = false
+            reload()
         }
-
-        if !failures.isEmpty {
-            let examples = failures.prefix(3).map { $0.0.title }.joined(separator: "、")
-            errorMessage = request.sessions.contains { $0.tool == .openCode } ? "\(failures.count)件を完全に削除できませんでした: \(examples)" : "\(failures.count)件をゴミ箱へ移せませんでした: \(examples)"
-        }
-        reload()
     }
 
     func storageTrashCandidates(for item: StorageItem) -> [StorageItem] {
@@ -424,6 +449,13 @@ final class SessionShelfStore: ObservableObject {
                 sessions: remaining
             )
         }
+    }
+
+    nonisolated private static func userFacingDeletionReason(for error: Error) -> String {
+        guard let error = error as? SessionShelfError else {
+            return "予期しないエラー"
+        }
+        return error.localizedDescription
     }
 }
 

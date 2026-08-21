@@ -56,6 +56,7 @@ struct ContentView: View {
             Button(trashButtonTitle(for: request), role: .destructive) {
                 store.confirmTrash(request)
             }
+            .disabled(store.isDeletingSessions)
             Button("キャンセル", role: .cancel) { store.trashRequest = nil }
         } message: { request in
             Text(trashMessage(for: request))

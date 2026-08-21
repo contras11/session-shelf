@@ -1,0 +1,34 @@
+name: 検証
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: macos-15
+    timeout-minutes: 20
+
+    steps:
+      - name: ソースを取得
+        uses: actions/checkout@v4
+
+      - name: Swift環境を確認
+        run: swift --version
+
+      - name: 単体テスト
+        run: swift test
+
+      - name: 保存形式と削除境界を検証
+        run: swift run SessionShelfChecks
+
+      - name: 配布アプリを生成
+        run: ./scripts/build_app.sh
+
+      - name: 配布アプリを検証
+        run: |
+          plutil -lint "dist/Session Shelf.app/Contents/Info.plist"
+          codesign --verify --deep --strict "dist/Session Shelf.app"

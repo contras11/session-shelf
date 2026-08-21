@@ -32,6 +32,7 @@ struct SessionShelfChecks {
         try checkOpenCodeSQLiteFixture(); completed += 1
         try checkOpenCodeSchemaFallback(); completed += 1
         try checkOpenCodeDeletionBoundaries(); completed += 1
+        try checkOpenCodePATHDiscovery(); completed += 1
         try checkOpenCodeStorageBoundaries(); completed += 1
         print("Session Shelf: \(completed)件の検証に成功")
     }
@@ -119,6 +120,28 @@ struct SessionShelfChecks {
             try updateOpenCode(db, sql: "UPDATE session SET time_updated=\(recent), time_compacting=NULL")
             let recentSession = try requireValue(repository.scan(.openCode).sessions.first, "recent fixture再取得失敗")
             try requireThrows { try repository.delete(recentSession, mode: recentSession.deletionMode) }
+        }
+    }
+
+    private static func checkOpenCodePATHDiscovery() throws {
+        try withTemporaryHome { home in
+            let db = home.appendingPathComponent(".local/share/opencode/opencode.db")
+            try createOpenCodeDB(db, sql: "CREATE TABLE session(id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, slug TEXT, directory TEXT, title TEXT, version TEXT, time_created INTEGER, time_updated INTEGER, time_compacting INTEGER, time_archived INTEGER); CREATE TABLE message(id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT); CREATE TABLE part(id TEXT, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT); INSERT INTO session VALUES('path-delete','p',NULL,'s','/tmp','PATH削除','1',1000,1000,NULL,NULL);")
+            let bin = home.appendingPathComponent("custom/bin", isDirectory: true)
+            try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+            let record = home.appendingPathComponent("path-args")
+            let cli = bin.appendingPathComponent("opencode")
+            try write("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"\(record.path)\"\nexit 0\n", to: cli)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli.path)
+
+            let repository = SessionRepository(
+                homeDirectory: home,
+                executableSearchPath: "relative/bin::\(bin.path):\(bin.path)"
+            )
+            let session = try requireValue(repository.scan(.openCode).sessions.first, "PATH探索fixture一覧なし")
+            try repository.delete(session, mode: session.deletionMode)
+            let args = try String(contentsOf: record)
+            try require(args.contains("path-delete"), "PATH上のOpenCode CLIを実行できない")
         }
     }
 

@@ -7,10 +7,17 @@ public struct SessionRepository: @unchecked Sendable {
     private let fileManager: FileManager
     private let openCodeExecutables: [URL]
 
-    public init(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser, openCodeExecutables: [URL]? = nil) {
+    public init(
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        openCodeExecutables: [URL]? = nil,
+        executableSearchPath: String? = ProcessInfo.processInfo.environment["PATH"]
+    ) {
         self.homeDirectory = homeDirectory.standardizedFileURL
         self.fileManager = .default
-        self.openCodeExecutables = openCodeExecutables ?? ["/opt/homebrew/bin/opencode", "/usr/local/bin/opencode", "/opt/local/bin/opencode"].map(URL.init(fileURLWithPath:))
+        self.openCodeExecutables = OpenCodeExecutableLocator.candidates(
+            explicitExecutables: openCodeExecutables,
+            searchPath: executableSearchPath
+        )
     }
 
     public func scanAll() -> [ToolShelf] {
@@ -393,6 +400,43 @@ public struct SessionRepository: @unchecked Sendable {
         return roots.contains { root in
             let base = root.standardizedFileURL.path + "/"
             return item.hasPrefix(base) && item != root.standardizedFileURL.path
+        }
+    }
+}
+
+enum OpenCodeExecutableLocator {
+    private static let fixedPaths = [
+        "/opt/homebrew/bin/opencode",
+        "/usr/local/bin/opencode",
+        "/opt/local/bin/opencode"
+    ]
+
+    static func candidates(explicitExecutables: [URL]?, searchPath: String?) -> [URL] {
+        if let explicitExecutables {
+            return unique(explicitExecutables)
+        }
+
+        var candidates: [URL] = []
+        if let searchPath {
+            for component in searchPath.split(separator: ":", omittingEmptySubsequences: false) {
+                let directory = String(component)
+                // 空要素や相対パスを現在ディレクトリとして解釈しない。
+                guard directory.hasPrefix("/") else { continue }
+                candidates.append(
+                    URL(fileURLWithPath: directory, isDirectory: true)
+                        .appendingPathComponent("opencode", isDirectory: false)
+                )
+            }
+        }
+        candidates.append(contentsOf: fixedPaths.map(URL.init(fileURLWithPath:)))
+        return unique(candidates)
+    }
+
+    private static func unique(_ urls: [URL]) -> [URL] {
+        var seen: Set<String> = []
+        return urls.compactMap { url in
+            let standardized = url.standardizedFileURL
+            return seen.insert(standardized.path).inserted ? standardized : nil
         }
     }
 }

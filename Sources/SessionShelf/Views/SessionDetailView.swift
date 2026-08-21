@@ -77,7 +77,11 @@ struct SessionDetailView: View {
 
     @ViewBuilder
     private func toolbarAction(for session: SessionSummary) -> some View {
-        if store.selectedSessionIDs.count > 1, !store.eligibleSelectedSessions.isEmpty {
+        if store.isDeletingSessions {
+            ProgressView()
+                .controlSize(.small)
+                .help("セッションを削除しています")
+        } else if store.selectedSessionIDs.count > 1, !store.eligibleSelectedSessions.isEmpty {
             Button(role: .destructive) {
                 store.requestTrashForSelection()
             } label: {

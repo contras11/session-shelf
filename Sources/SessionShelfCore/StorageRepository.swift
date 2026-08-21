@@ -41,51 +41,51 @@ public struct StorageRepository: @unchecked Sendable {
         for tool in AITool.allCases {
             if shouldCancel() { return StorageScanReport(items: items, issues: issues, wasCancelled: true) }
             for root in storageRoots(for: tool) {
-            guard fileManager.fileExists(atPath: root.path) else { continue }
-            for candidate in candidates(in: root, tool: tool) {
-                if shouldCancel() { return StorageScanReport(items: items, issues: issues, wasCancelled: true) }
-                let measurement = measure(candidate, shouldCancel: shouldCancel)
-                if shouldCancel() { return StorageScanReport(items: items, issues: issues, wasCancelled: true) }
-                if let issue = measurement.issue {
-                    issues.append(StorageScanIssue(path: candidate.path, message: issue))
-                }
-                let relativePath = policyRelativePath(of: candidate, under: root, tool: tool)
-                var classification = StoragePolicy.classify(
-                    tool: tool,
-                    relativePath: relativePath,
-                    url: candidate,
-                    modifiedAt: measurement.modifiedAt,
-                    containsSymbolicLink: measurement.containsSymbolicLink,
-                    now: now(),
-                    homeDirectory: homeDirectory,
-                    fileManager: fileManager
-                )
-                if measurement.issue != nil {
-                    classification = Classification(
-                        category: .unknown,
-                        safety: .protected,
-                        title: candidate.lastPathComponent,
-                        explanation: "一部の内容を確認できなかったデータです。",
-                        impact: "Session Shelfからは削除できません。",
-                        reason: "容量と内容を完全に確認できないため保護しています"
+                guard fileManager.fileExists(atPath: root.path) else { continue }
+                for candidate in candidates(in: root, tool: tool) {
+                    if shouldCancel() { return StorageScanReport(items: items, issues: issues, wasCancelled: true) }
+                    let measurement = measure(candidate, shouldCancel: shouldCancel)
+                    if shouldCancel() { return StorageScanReport(items: items, issues: issues, wasCancelled: true) }
+                    if let issue = measurement.issue {
+                        issues.append(StorageScanIssue(path: candidate.path, message: issue))
+                    }
+                    let relativePath = policyRelativePath(of: candidate, under: root, tool: tool)
+                    var classification = StoragePolicy.classify(
+                        tool: tool,
+                        relativePath: relativePath,
+                        url: candidate,
+                        modifiedAt: measurement.modifiedAt,
+                        containsSymbolicLink: measurement.containsSymbolicLink,
+                        now: now(),
+                        homeDirectory: homeDirectory,
+                        fileManager: fileManager
                     )
+                    if measurement.issue != nil {
+                        classification = Classification(
+                            category: .unknown,
+                            safety: .protected,
+                            title: candidate.lastPathComponent,
+                            explanation: "一部の内容を確認できなかったデータです。",
+                            impact: "Session Shelfからは削除できません。",
+                            reason: "容量と内容を完全に確認できないため保護しています"
+                        )
+                    }
+                    items.append(StorageItem(
+                        id: "\(tool.rawValue):\(candidate.standardizedFileURL.path)",
+                        tool: tool,
+                        category: classification.category,
+                        safety: classification.safety,
+                        title: classification.title,
+                        explanation: classification.explanation,
+                        deletionImpact: classification.impact,
+                        safetyReason: classification.reason,
+                        byteCount: measurement.byteCount,
+                        fileCount: measurement.fileCount,
+                        modifiedAt: measurement.modifiedAt,
+                        location: candidate.standardizedFileURL,
+                        containsSymbolicLink: measurement.containsSymbolicLink
+                    ))
                 }
-                items.append(StorageItem(
-                    id: "\(tool.rawValue):\(candidate.standardizedFileURL.path)",
-                    tool: tool,
-                    category: classification.category,
-                    safety: classification.safety,
-                    title: classification.title,
-                    explanation: classification.explanation,
-                    deletionImpact: classification.impact,
-                    safetyReason: classification.reason,
-                    byteCount: measurement.byteCount,
-                    fileCount: measurement.fileCount,
-                    modifiedAt: measurement.modifiedAt,
-                    location: candidate.standardizedFileURL,
-                    containsSymbolicLink: measurement.containsSymbolicLink
-                ))
-            }
             }
         }
 
