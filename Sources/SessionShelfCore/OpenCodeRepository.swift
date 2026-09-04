@@ -99,16 +99,70 @@ public enum OpenCodeRepository {
         return blocks.joined(separator: "\n")
     }
 
-    static func delete(sessionID: String, database: URL, expectedUpdated: Date, executables: [URL]) throws {
+    static func delete(
+        sessionID: String,
+        database: URL,
+        expectedUpdated: Date,
+        executables: [URL],
+        timeout: TimeInterval = 15
+    ) throws {
         let rows = try query(database, "SELECT id, time_updated, time_compacting FROM session WHERE id = '\(sql(sessionID))'")
         guard let row = rows.first, value(row, "id") == sessionID else { throw SessionShelfError.unreadable("OpenCodeセッションが見つかりません") }
         guard let updated = date(value(row, "time_updated")), abs(updated.timeIntervalSince(expectedUpdated)) < 0.001 else { throw SessionShelfError.storageItemChanged }
         guard value(row, "time_compacting") == nil, Date().timeIntervalSince(updated) >= 1800 else { throw SessionShelfError.protectedItem("更新直後または圧縮中のセッション") }
         guard let executable = executables.first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) else { throw SessionShelfError.unreadable("OpenCode公式CLIが見つかりません") }
-        let process = Process(); process.executableURL = executable; process.arguments = ["session", "delete", sessionID]
-        let errorPipe = Pipe(); process.standardError = errorPipe
-        try process.run(); process.waitUntilExit()
-        guard process.terminationStatus == 0 else { throw SessionShelfError.unreadable("OpenCode CLIが削除に失敗しました") }
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = ["session", "delete", "--pure", sessionID]
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+        process.standardOutput = Pipe()
+        let stderr = LockedData()
+        errorPipe.fileHandleForReading.readabilityHandler = { handle in
+            stderr.append(handle.availableData)
+        }
+        let group = DispatchGroup()
+        group.enter()
+        process.terminationHandler = { _ in group.leave() }
+        do {
+            try process.run()
+        } catch {
+            errorPipe.fileHandleForReading.readabilityHandler = nil
+            group.leave()
+            throw error
+        }
+        if group.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+            _ = group.wait(timeout: .now() + 2)
+            errorPipe.fileHandleForReading.readabilityHandler = nil
+            throw SessionShelfError.unreadable("OpenCode CLIが応答しないため削除を中止しました")
+        }
+        errorPipe.fileHandleForReading.readabilityHandler = nil
+        stderr.append(errorPipe.fileHandleForReading.availableData)
+        let stderrText = String(data: stderr.snapshot(), encoding: .utf8) ?? ""
+        guard process.terminationStatus == 0 else {
+            let snippet = stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let clipped = snippet.isEmpty ? "" : ": \(String(snippet.suffix(180)))"
+            throw SessionShelfError.unreadable("OpenCode CLIが削除に失敗しました\(clipped)")
+        }
+    }
+
+    private final class LockedData: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage = Data()
+
+        func append(_ data: Data) {
+            guard !data.isEmpty else { return }
+            lock.lock()
+            storage.append(data)
+            lock.unlock()
+        }
+
+        func snapshot() -> Data {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage
+        }
     }
 
     private static func sql(_ value: String) -> String { value.replacingOccurrences(of: "'", with: "''") }

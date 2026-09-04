@@ -384,6 +384,7 @@ final class SessionShelfStore: ObservableObject {
     }
 
     func requestStorageTrash(_ items: [StorageItem]) {
+        guard !isDeletingStorage else { return }
         let unique = Dictionary(grouping: items, by: \.id).compactMap(\.value.first)
         let request = StorageTrashRequest(items: unique)
         guard !request.eligible.isEmpty else {
@@ -398,6 +399,7 @@ final class SessionShelfStore: ObservableObject {
     }
 
     func confirmStorageTrash(_ request: StorageTrashRequest) {
+        guard !isDeletingStorage else { return }
         storageTrashRequest = nil
         isDeletingStorage = true
         storageScanTask?.cancel()

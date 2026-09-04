@@ -6,11 +6,13 @@ public struct SessionRepository: @unchecked Sendable {
     public let homeDirectory: URL
     private let fileManager: FileManager
     private let openCodeExecutables: [URL]
+    private let openCodeDeletionTimeout: TimeInterval
 
     public init(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         openCodeExecutables: [URL]? = nil,
-        executableSearchPath: String? = ProcessInfo.processInfo.environment["PATH"]
+        executableSearchPath: String? = ProcessInfo.processInfo.environment["PATH"],
+        openCodeDeletionTimeout: TimeInterval = 15
     ) {
         self.homeDirectory = homeDirectory.standardizedFileURL
         self.fileManager = .default
@@ -18,6 +20,7 @@ public struct SessionRepository: @unchecked Sendable {
             explicitExecutables: openCodeExecutables,
             searchPath: executableSearchPath
         )
+        self.openCodeDeletionTimeout = openCodeDeletionTimeout
     }
 
     public func scanAll() -> [ToolShelf] {
@@ -69,15 +72,37 @@ public struct SessionRepository: @unchecked Sendable {
         guard session.isSupported, isAllowedDeletionURL(session.deletionURL, for: session.tool) else {
             throw SessionShelfError.outsideAllowedLocation
         }
-        var resultingURL: NSURL?
-        try fileManager.trashItem(at: session.deletionURL, resultingItemURL: &resultingURL)
+        try validatePrimaryDeletionTarget(session)
+        var pending: [URL] = []
+        for related in session.relatedURLs {
+            guard exists(related) else { continue }
+            guard isAllowedRelatedURL(related, for: session) else {
+                throw SessionShelfError.outsideAllowedLocation
+            }
+            try validateRelatedDeletionTarget(related)
+            pending.append(related)
+        }
+        if session.deletionURL.standardizedFileURL != observedURL(for: session).standardizedFileURL {
+            try validateFreshness(session.deletionURL, expectedDate: nil)
+        }
+        for related in pending {
+            guard exists(related) else { continue }
+            try trash(related)
+        }
+        try trash(session.deletionURL)
     }
 
     public func delete(_ session: SessionSummary, mode: SessionDeletionMode) throws {
         guard mode == session.deletionMode else { throw SessionShelfError.protectedItem("削除対象の状態が変わりました") }
         guard session.tool == .openCode, case .openCodeCLI(let id) = mode else { return try moveToTrash(session) }
         let db = session.sourceURL
-        try OpenCodeRepository.delete(sessionID: id, database: db, expectedUpdated: session.date, executables: openCodeExecutables)
+        try OpenCodeRepository.delete(
+            sessionID: id,
+            database: db,
+            expectedUpdated: session.date,
+            executables: openCodeExecutables,
+            timeout: openCodeDeletionTimeout
+        )
     }
 
     public func candidatePaths(for tool: AITool) -> [String] {
@@ -245,18 +270,92 @@ public struct SessionRepository: @unchecked Sendable {
         let parsed = try? LogParsing.parseJSONL(at: url, tool: tool, byteLimit: LogLimits.listBytes)
         let project = parsed?.project ?? inferredProject(from: url, tool: tool)
         let protected = activeProtection && isRecentlyModified(url)
+        let deletionURL = cursorCLIDeletionURL(for: url, tool: tool)
+        let related = relatedURLs(for: url, tool: tool)
+        let bytes: Int64
+        if let deletionURL, deletionURL.standardizedFileURL != url.standardizedFileURL {
+            bytes = itemSize(deletionURL)
+        } else {
+            bytes = size(url) + related.reduce(0) { $0 + itemSize($1) }
+        }
         return SessionSummary(
             id: "\(tool.rawValue):\(url.path)",
             tool: tool,
             title: parsed?.title ?? "名称未設定のセッション",
             date: modifiedDate(url),
-            byteCount: size(url),
+            byteCount: bytes,
             project: project,
             overview: parsed?.overview ?? "会話の概要を取得できませんでした",
             sourceURL: url,
+            deletionURL: deletionURL,
+            relatedURLs: related,
             isProtected: protected,
             protectionReason: protected ? "更新中の可能性があるセッション" : nil
         )
+    }
+
+    private func cursorCLIDeletionURL(for url: URL, tool: AITool) -> URL? {
+        guard tool == .cursorCLI else { return nil }
+        let directory = url.deletingLastPathComponent()
+        guard directory.lastPathComponent != "agent-transcripts",
+              isAllowedDeletionURL(directory, for: .cursorCLI) else {
+            return url
+        }
+        return directory
+    }
+
+    private func relatedURLs(for url: URL, tool: AITool) -> [URL] {
+        switch tool {
+        case .claudeCode:
+            return claudeRelatedURLs(for: url)
+        case .codex:
+            return codexRelatedURLs(for: url)
+        default:
+            return []
+        }
+    }
+
+    private func claudeRelatedURLs(for url: URL) -> [URL] {
+        let uuid = url.deletingPathExtension().lastPathComponent
+        guard !uuid.isEmpty else { return [] }
+        var related: [URL] = []
+        let sibling = url.deletingPathExtension()
+        if exists(sibling), sibling.standardizedFileURL != url.standardizedFileURL {
+            related.append(sibling.standardizedFileURL)
+        }
+        for folder in ["file-history", "session-env", "tasks"] {
+            let extra = homeDirectory.appendingPathComponent(".claude/\(folder)/\(uuid)")
+            if exists(extra) {
+                related.append(extra.standardizedFileURL)
+            }
+        }
+        return related
+    }
+
+    private func codexRelatedURLs(for url: URL) -> [URL] {
+        guard let threadID = codexThreadID(from: url) else { return [] }
+        let snapshots = homeDirectory.appendingPathComponent(".codex/shell_snapshots")
+        guard exists(snapshots) else { return [] }
+        let children = (try? fileManager.contentsOfDirectory(
+            at: snapshots,
+            includingPropertiesForKeys: [.isSymbolicLinkKey],
+            options: []
+        )) ?? []
+        return children.filter { child in
+            let name = child.lastPathComponent
+            return name == threadID || name.hasPrefix(threadID + ".")
+        }.map(\.standardizedFileURL)
+    }
+
+    private func codexThreadID(from url: URL) -> String? {
+        let name = url.deletingPathExtension().lastPathComponent
+        guard let regex = try? NSRegularExpression(
+            pattern: "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+        ) else { return nil }
+        let range = NSRange(name.startIndex..., in: name)
+        guard let match = regex.matches(in: name, range: range).last,
+              let matchRange = Range(match.range, in: name) else { return nil }
+        return String(name[matchRange])
     }
 
     private func shelf(_ tool: AITool, sessions: [SessionSummary]) -> ToolShelf {
@@ -355,7 +454,7 @@ public struct SessionRepository: @unchecked Sendable {
     private func exists(_ url: URL) -> Bool { fileManager.fileExists(atPath: url.path) }
 
     private func modifiedDate(_ url: URL) -> Date {
-        (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+        (try? fileManager.attributesOfItem(atPath: url.path)[.modificationDate] as? Date) ?? .distantPast
     }
 
     private func size(_ url: URL) -> Int64 {
@@ -378,6 +477,84 @@ public struct SessionRepository: @unchecked Sendable {
 
     private func isRecentlyModified(_ url: URL) -> Bool {
         Date().timeIntervalSince(modifiedDate(url)) < 30 * 60
+    }
+
+    private func itemSize(_ url: URL) -> Int64 {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return 0 }
+        return isDirectory.boolValue ? directorySize(url) : size(url)
+    }
+
+    private func observedURL(for session: SessionSummary) -> URL {
+        if session.tool == .grokBuildCLI {
+            return session.sourceURL.appendingPathComponent("summary.json")
+        }
+        return session.sourceURL
+    }
+
+    private func validatePrimaryDeletionTarget(_ session: SessionSummary) throws {
+        let observed = observedURL(for: session)
+        guard exists(observed) else { throw SessionShelfError.unreadable("削除対象が見つかりません") }
+        try validateFreshness(observed, expectedDate: session.date)
+    }
+
+    private func validateRelatedDeletionTarget(_ url: URL) throws {
+        try validateFreshness(url, expectedDate: nil)
+    }
+
+    private func validateFreshness(_ url: URL, expectedDate: Date?) throws {
+        if isSymbolicLink(url) {
+            throw SessionShelfError.protectedItem("シンボリックリンクを含むため")
+        }
+        let current = modifiedDate(url)
+        if let expectedDate, abs(current.timeIntervalSince(expectedDate)) >= 0.001 {
+            throw SessionShelfError.storageItemChanged
+        }
+        if Date().timeIntervalSince(current) < 30 * 60 {
+            throw SessionShelfError.protectedItem("更新中の可能性があるセッション")
+        }
+    }
+
+    private func trash(_ url: URL) throws {
+        if isSymbolicLink(url) {
+            throw SessionShelfError.protectedItem("シンボリックリンクを含むため")
+        }
+        var resultingURL: NSURL?
+        try fileManager.trashItem(at: url, resultingItemURL: &resultingURL)
+    }
+
+    private func isSymbolicLink(_ url: URL) -> Bool {
+        (try? fileManager.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType) == .typeSymbolicLink
+    }
+
+    private func isStrictDescendant(_ url: URL, of root: URL) -> Bool {
+        let path = url.standardizedFileURL.path
+        let base = root.standardizedFileURL.path + "/"
+        return path.hasPrefix(base) && path != root.standardizedFileURL.path
+    }
+
+    private func isAllowedRelatedURL(_ url: URL, for session: SessionSummary) -> Bool {
+        let item = url.standardizedFileURL
+        switch session.tool {
+        case .claudeCode:
+            let uuid = session.sourceURL.deletingPathExtension().lastPathComponent
+            guard item.lastPathComponent == uuid else { return false }
+            let sibling = session.sourceURL.deletingPathExtension().standardizedFileURL
+            if item == sibling {
+                return isAllowedDeletionURL(item, for: .claudeCode)
+            }
+            let extraRoots = ["file-history", "session-env", "tasks"].map {
+                homeDirectory.appendingPathComponent(".claude/\($0)", isDirectory: true).standardizedFileURL
+            }
+            return extraRoots.contains { root in
+                item.deletingLastPathComponent().standardizedFileURL == root && isStrictDescendant(item, of: root)
+            }
+        case .codex:
+            let snapshots = homeDirectory.appendingPathComponent(".codex/shell_snapshots", isDirectory: true).standardizedFileURL
+            return item.deletingLastPathComponent().standardizedFileURL == snapshots && isStrictDescendant(item, of: snapshots)
+        default:
+            return false
+        }
     }
 
     private func isAllowedDeletionURL(_ url: URL, for tool: AITool) -> Bool {

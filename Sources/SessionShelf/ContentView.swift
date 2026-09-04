@@ -34,7 +34,11 @@ struct ContentView: View {
             store.reconcileSidebarSelection(visibleTools: visibleTools)
         }
         .onReceive(NotificationCenter.default.publisher(for: .sessionShelfReload)) { _ in
-            store.reload()
+            if store.isStoragePresented {
+                store.reloadStorage()
+            } else {
+                store.reload()
+            }
         }
         .alert("Session Shelf", isPresented: Binding(
             get: { store.errorMessage != nil },
@@ -73,6 +77,7 @@ struct ContentView: View {
             Button(storageTrashButtonTitle(for: request), role: .destructive) {
                 store.confirmStorageTrash(request)
             }
+            .disabled(store.isDeletingStorage)
             Button("キャンセル", role: .cancel) { store.storageTrashRequest = nil }
         } message: { request in
             Text(storageTrashMessage(for: request))
@@ -88,15 +93,39 @@ struct ContentView: View {
     }
 
     private func trashButtonTitle(for request: TrashRequest) -> String {
-        if request.sessions.contains(where: { $0.tool == .openCode }) { return "完全に削除" }
+        if request.sessions.contains(where: { $0.tool == .openCode }) {
+            return request.eligible.count == 1 ? "完全に削除" : "\(request.eligible.count)件を完全に削除"
+        }
         return request.eligible.count == 1 ? "ゴミ箱へ移す" : "\(request.eligible.count)件をゴミ箱へ移す"
     }
 
     private func trashMessage(for request: TrashRequest) -> String {
-        if request.sessions.contains(where: { $0.tool == .openCode }) { return "ゴミ箱へ移らず復元できません。公式OpenCode CLIで完全に削除します。" }
-        let recovery = "完全削除は行いません。macOSのゴミ箱から戻せます。"
-        guard request.excludedCount > 0 else { return recovery }
-        return "\(request.excludedCount)件は保護中または未対応のため除外します。\(recovery)"
+        if request.sessions.contains(where: { $0.tool == .openCode }) {
+            var parts = ["ゴミ箱へ移らず復元できません。公式OpenCode CLIで完全に削除します。"]
+            if request.excludedCount > 0 {
+                parts.append("\(request.excludedCount)件は保護中または未対応のため除外します。")
+            }
+            return parts.joined()
+        }
+        var parts: [String] = []
+        if request.eligible.contains(where: includesRelatedFiles) {
+            let relatedCount = request.eligible.reduce(0) { $0 + $1.relatedURLs.count }
+            if relatedCount > 0 {
+                parts.append("会話ログと関連ファイル\(relatedCount)件もゴミ箱へ移します。")
+            } else {
+                parts.append("会話ログと、同じセッションの関連ファイルもゴミ箱へ移します。")
+            }
+        }
+        parts.append("完全削除は行いません。macOSのゴミ箱から戻せます。")
+        if request.excludedCount > 0 {
+            parts.append("\(request.excludedCount)件は保護中または未対応のため除外します。")
+        }
+        return parts.joined()
+    }
+
+    private func includesRelatedFiles(_ session: SessionSummary) -> Bool {
+        !session.relatedURLs.isEmpty
+            || session.deletionURL.standardizedFileURL != session.sourceURL.standardizedFileURL
     }
 
     private var storageTrashDialogTitle: String {

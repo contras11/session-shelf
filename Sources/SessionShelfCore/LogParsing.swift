@@ -248,7 +248,6 @@ enum LogParsing {
             addToolResult(output, result: failed ? .failure : .success, timestamp: timestamp, into: &result)
             result.operations.append(OperationEntry(category: .other, summary: "ツールの実行結果", result: failed ? .failure : .success, timestamp: timestamp))
         }
-        collectPaths(in: object, into: &result.changedFiles)
     }
 
     private static func merge(_ source: ParsedLog, into target: inout ParsedLog) {

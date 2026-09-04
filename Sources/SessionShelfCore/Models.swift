@@ -202,6 +202,7 @@ public struct SessionSummary: Identifiable, Hashable, Sendable {
     public let overview: String
     public let sourceURL: URL
     public let deletionURL: URL
+    public let relatedURLs: [URL]
     public let isSupported: Bool
     public let isProtected: Bool
     public let protectionReason: String?
@@ -218,10 +219,11 @@ public struct SessionSummary: Identifiable, Hashable, Sendable {
         overview: String,
         sourceURL: URL,
         deletionURL: URL? = nil,
+        relatedURLs: [URL] = [],
         isSupported: Bool = true,
         isProtected: Bool = false,
-        protectionReason: String? = nil
-        , deletionMode: SessionDeletionMode? = nil
+        protectionReason: String? = nil,
+        deletionMode: SessionDeletionMode? = nil
     ) {
         self.id = id
         self.tool = tool
@@ -233,6 +235,7 @@ public struct SessionSummary: Identifiable, Hashable, Sendable {
         self.overview = overview
         self.sourceURL = sourceURL
         self.deletionURL = deletionURL ?? sourceURL
+        self.relatedURLs = relatedURLs
         self.isSupported = isSupported
         self.isProtected = isProtected
         self.protectionReason = protectionReason

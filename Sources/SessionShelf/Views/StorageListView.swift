@@ -105,6 +105,7 @@ struct StorageListView: View {
                         ) {
                             store.requestStorageTrash(candidates)
                         }
+                        .disabled(store.isDeletingStorage)
                     }
                 }
         }

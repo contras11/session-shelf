@@ -23,6 +23,10 @@ struct SessionShelfChecks {
         try checkGrok(); completed += 1
         try checkProtection(); completed += 1
         try checkTrashRemovesFromScan(); completed += 1
+        try checkRelatedSessionDeletion(); completed += 1
+        try checkDeletionRevalidatesModificationDate(); completed += 1
+        try checkOpenCodeCLITimeoutAndStderr(); completed += 1
+        try checkGrokChangedFiles(); completed += 1
         try checkMessageBlocks(); completed += 1
         try checkMarkdownDocument(); completed += 1
         try checkMultipleSelection(); completed += 1
@@ -101,7 +105,7 @@ struct SessionShelfChecks {
             let session = try requireValue(repository.scan(.openCode).sessions.first, "削除fixture一覧なし")
             try repository.delete(session, mode: session.deletionMode)
             let args = try String(contentsOf: record)
-            try require(args.contains("session\n") && args.contains("delete\n") && args.contains("delete-me\n"), "偽CLI引数が不正")
+            try require(args.contains("session\n") && args.contains("delete\n") && args.contains("--pure\n") && args.contains("delete-me\n"), "偽CLI引数が不正")
             try requireThrows { try repository.delete(session, mode: .openCodeCLI(sessionID: "other")) }
             try require(String(contentsOf: record) == args, "不一致IDでCLI記録が変化")
             try requireThrows { try repository.moveToTrash(session) }
@@ -498,6 +502,185 @@ struct SessionShelfChecks {
             try require(FileManager.default.fileExists(atPath: protectedSession.path), "保護対象まで削除された")
             let remaining = repository.scan(.codex).sessions
             try require(remaining.count == 1 && remaining[0].isProtected, "一括削除後の保護対象が一覧に残らない")
+        }
+    }
+
+    private static func checkRelatedSessionDeletion() throws {
+        try withTemporaryHome { home in
+            let oldDate = Date(timeIntervalSinceNow: -3_600)
+            let claudeID = "11111111-1111-4111-8111-111111111111"
+            let claudeJSONL = home.appendingPathComponent(".claude/projects/-tmp-Demo/\(claudeID).jsonl")
+            let sibling = home.appendingPathComponent(".claude/projects/-tmp-Demo/\(claudeID)/tool-results/out.txt")
+            let history = home.appendingPathComponent(".claude/file-history/\(claudeID)/edit.txt")
+            let env = home.appendingPathComponent(".claude/session-env/\(claudeID)/env.json")
+            let tasks = home.appendingPathComponent(".claude/tasks/\(claudeID)/todo.md")
+            let protectedJSONL = home.appendingPathComponent(".claude/projects/-tmp-Demo/working.jsonl")
+            try writeJSONLines([
+                ["type": "user", "message": ["role": "user", "content": "古い作業"]]
+            ], to: claudeJSONL)
+            try write("out", to: sibling)
+            try write("hist", to: history)
+            try write("env", to: env)
+            try write("task", to: tasks)
+            try writeJSONLines([
+                ["type": "user", "message": ["role": "user", "content": "作業中"]]
+            ], to: protectedJSONL)
+            for url in [claudeJSONL, sibling, history, env, tasks] {
+                try setTreeModificationDate(oldDate, from: url, through: home)
+            }
+
+            let cursorID = "22222222-2222-4222-8222-222222222222"
+            let cursorDir = home.appendingPathComponent(".cursor/projects/Users-test-Demo/agent-transcripts/\(cursorID)")
+            let cursorJSONL = cursorDir.appendingPathComponent("\(cursorID).jsonl")
+            let subagent = cursorDir.appendingPathComponent("subagents/child.jsonl")
+            try writeJSONLines([
+                ["role": "user", "message": ["content": [["type": "text", "text": "Cursorの質問"]]]]
+            ], to: cursorJSONL)
+            try writeJSONLines([
+                ["role": "user", "message": ["content": "補助"]]
+            ], to: subagent)
+            try setTreeModificationDate(oldDate, from: cursorJSONL, through: home)
+            try setTreeModificationDate(oldDate, from: subagent, through: home)
+
+            let threadID = "019fa14a-e705-7eb2-9e3e-400d5ee38c5e"
+            let codex = home.appendingPathComponent(".codex/archived_sessions/rollout-2026-07-27T10-57-48-\(threadID).jsonl")
+            let snapshot = home.appendingPathComponent(".codex/shell_snapshots/\(threadID).1.sh")
+            let otherSnapshot = home.appendingPathComponent(".codex/shell_snapshots/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.1.sh")
+            try writeJSONLines([
+                ["type": "response_item", "payload": ["type": "message", "role": "user", "content": "古いCodex"]]
+            ], to: codex)
+            try write("snap", to: snapshot)
+            try write("other", to: otherSnapshot)
+            for url in [codex, snapshot, otherSnapshot] {
+                try setTreeModificationDate(oldDate, from: url, through: home)
+            }
+
+            let repository = SessionRepository(homeDirectory: home)
+            let claude = try requireValue(
+                repository.scan(.claudeCode).sessions.first { $0.sourceURL.lastPathComponent == claudeJSONL.lastPathComponent },
+                "Claude関連削除の対象がない"
+            )
+            try require(claude.relatedURLs.count == 4, "Claudeの関連パス件数が不正")
+            try repository.moveToTrash(claude)
+            try require(!FileManager.default.fileExists(atPath: claudeJSONL.path), "ClaudeのJSONLが残っている")
+            try require(!FileManager.default.fileExists(atPath: sibling.deletingLastPathComponent().deletingLastPathComponent().path), "Claudeの隣接ディレクトリが残っている")
+            try require(!FileManager.default.fileExists(atPath: history.deletingLastPathComponent().path), "Claudeのfile-historyが残っている")
+            try require(!FileManager.default.fileExists(atPath: env.deletingLastPathComponent().path), "Claudeのsession-envが残っている")
+            try require(!FileManager.default.fileExists(atPath: tasks.deletingLastPathComponent().path), "Claudeのtasksが残っている")
+            try require(FileManager.default.fileExists(atPath: protectedJSONL.path), "保護中のClaudeセッションまで削除された")
+
+            let cursor = try requireValue(
+                repository.scan(.cursorCLI).sessions.first { $0.sourceURL.lastPathComponent == cursorJSONL.lastPathComponent },
+                "Cursor CLI関連削除の対象がない"
+            )
+            try require(
+                cursor.deletionURL.standardizedFileURL == cursorDir.standardizedFileURL,
+                "Cursor CLIの削除対象が会話ディレクトリではない"
+            )
+            try repository.moveToTrash(cursor)
+            try require(!FileManager.default.fileExists(atPath: cursorDir.path), "Cursor CLIの会話ディレクトリが残っている")
+
+            let codexSession = try requireValue(
+                repository.scan(.codex).sessions.first { $0.sourceURL.lastPathComponent == codex.lastPathComponent },
+                "Codex関連削除の対象がない"
+            )
+            try require(codexSession.relatedURLs.contains { $0.lastPathComponent == snapshot.lastPathComponent }, "Codexのsnapshotを関連付けられない")
+            try repository.moveToTrash(codexSession)
+            try require(!FileManager.default.fileExists(atPath: codex.path), "CodexのJSONLが残っている")
+            try require(!FileManager.default.fileExists(atPath: snapshot.path), "Codexの一致するsnapshotが残っている")
+            try require(FileManager.default.fileExists(atPath: otherSnapshot.path), "無関係なCodex snapshotまで削除された")
+        }
+    }
+
+    private static func checkDeletionRevalidatesModificationDate() throws {
+        try withTemporaryHome { home in
+            let session = home.appendingPathComponent(".codex/archived_sessions/changed.jsonl")
+            try writeJSONLines([
+                ["type": "response_item", "payload": ["type": "message", "role": "user", "content": "確認後に変わる"]]
+            ], to: session)
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date(timeIntervalSinceNow: -3_600)],
+                ofItemAtPath: session.path
+            )
+            let repository = SessionRepository(homeDirectory: home)
+            let item = try requireValue(repository.scan(.codex).sessions.first, "再確認テストのセッションがない")
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date(timeIntervalSinceNow: -7_200)],
+                ofItemAtPath: session.path
+            )
+            do {
+                try repository.moveToTrash(item)
+                throw CheckFailure.failed("確認後に更新時刻が変わったセッションを移動できてしまった")
+            } catch SessionShelfError.storageItemChanged {
+                // 期待どおり
+            }
+            try require(FileManager.default.fileExists(atPath: session.path), "再確認失敗なのにファイルが消えた")
+        }
+    }
+
+    private static func checkOpenCodeCLITimeoutAndStderr() throws {
+        try withTemporaryHome { home in
+            let db = home.appendingPathComponent(".local/share/opencode/opencode.db")
+            try createOpenCodeDB(db, sql: "CREATE TABLE session(id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, slug TEXT, directory TEXT, title TEXT, version TEXT, time_created INTEGER, time_updated INTEGER, time_compacting INTEGER, time_archived INTEGER); CREATE TABLE message(id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT); CREATE TABLE part(id TEXT, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT); INSERT INTO session VALUES('hang-me','p',NULL,'s','/tmp','タイムアウト','1',1000,1000,NULL,NULL);")
+            let hang = home.appendingPathComponent("hang-opencode")
+            try write("#!/bin/sh\nsleep 30\nexit 0\n", to: hang)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hang.path)
+            let hanging = SessionRepository(homeDirectory: home, openCodeExecutables: [hang], openCodeDeletionTimeout: 0.5)
+            let session = try requireValue(hanging.scan(.openCode).sessions.first, "タイムアウトfixture一覧なし")
+            let started = Date()
+            try requireThrows { try hanging.delete(session, mode: session.deletionMode) }
+            try require(Date().timeIntervalSince(started) < 8, "OpenCode CLIのタイムアウトが効いていない")
+
+            try updateOpenCode(db, sql: "INSERT OR IGNORE INTO session VALUES('stderr-me','p',NULL,'s','/tmp','stderr','1',1000,1000,NULL,NULL);")
+            let noisy = home.appendingPathComponent("noisy-opencode")
+            try write("""
+            #!/bin/sh
+            awk 'BEGIN { for (i = 0; i < 20000; i++) print "noise" }' >&2
+            echo sentinel-cli-error >&2
+            exit 1
+            """, to: noisy)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: noisy.path)
+            let noisyRepo = SessionRepository(homeDirectory: home, openCodeExecutables: [noisy])
+            let noisySession = try requireValue(
+                noisyRepo.scan(.openCode).sessions.first { $0.id.hasSuffix("stderr-me") },
+                "stderr fixture一覧なし"
+            )
+            do {
+                try noisyRepo.delete(noisySession, mode: noisySession.deletionMode)
+                throw CheckFailure.failed("stderrを出したCLIを成功扱いにした")
+            } catch SessionShelfError.unreadable(let message) {
+                try require(message.contains("sentinel-cli-error"), "OpenCode CLIのstderrをエラーへ含めない: \(message)")
+            }
+        }
+    }
+
+    private static func checkGrokChangedFiles() throws {
+        try withTemporaryHome { home in
+            let directory = home.appendingPathComponent(".grok/sessions/%2Ftmp%2FGrok/changed", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let summary: [String: Any] = [
+                "generated_title": "変更ファイル",
+                "session_summary": "編集だけを抽出",
+                "info": ["cwd": "/tmp/Grok"]
+            ]
+            try JSONSerialization.data(withJSONObject: summary).write(to: directory.appendingPathComponent("summary.json"))
+            try writeJSONLines([
+                ["type": "user", "content": [["type": "text", "text": "<user_query>直してください</user_query>"]]],
+                [
+                    "type": "assistant",
+                    "content": "読みます",
+                    "tool_calls": [["name": "read", "arguments": ["path": "/tmp/Grok/Secret.swift"]]]
+                ],
+                [
+                    "type": "assistant",
+                    "content": "書きました",
+                    "tool_calls": [["name": "write", "arguments": ["path": "/tmp/Grok/App.swift"]]]
+                ]
+            ], to: directory.appendingPathComponent("chat_history.jsonl"))
+            let repository = SessionRepository(homeDirectory: home)
+            let item = try requireValue(repository.scan(.grokBuildCLI).sessions.first, "Grok変更ファイルfixtureがない")
+            let detail = try repository.loadDetail(for: item)
+            try require(detail.changedFiles.map(\.path) == ["/tmp/Grok/App.swift"], "Grokが編集以外のパスを変更ファイルへ混ぜている")
         }
     }
 
