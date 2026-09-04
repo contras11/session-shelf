@@ -10,6 +10,9 @@ struct TrashRequest: Identifiable {
     }
 
     var excludedCount: Int { sessions.count - eligible.count }
+    var subagentCount: Int { sessions.filter { $0.lineage?.isSubagent == true }.count }
+    var rootSessionCount: Int { sessions.count - subagentCount }
+    var totalByteCount: Int64 { eligible.reduce(0) { $0 + $1.byteCount } }
 }
 
 enum SidebarDestination: Hashable {
@@ -321,12 +324,21 @@ final class SessionShelfStore: ObservableObject {
     }
 
     func trashCandidates(for session: SessionSummary) -> [SessionSummary] {
-        selectedSessionIDs.contains(session.id) ? selectedSessions : [session]
+        let seeds = selectedSessionIDs.contains(session.id) ? selectedSessions : [session]
+        return SessionHierarchy.deletionOrder(
+            startingAt: seeds,
+            in: selectedShelf?.sessions ?? seeds
+        )
     }
 
     func requestTrash(_ sessions: [SessionSummary]) {
         guard !isDeletingSessions else { return }
-        let unique = Dictionary(grouping: sessions, by: \.id).compactMap(\.value.first)
+        var seen: Set<String> = []
+        let unique = sessions.filter { seen.insert($0.id).inserted }
+        if SessionHierarchy.hasBlockedMemberInFamily(unique) {
+            errorMessage = "親子セッションの一部が保護中または未対応のため、まとめて削除できません"
+            return
+        }
         let request = TrashRequest(sessions: unique)
         guard !request.eligible.isEmpty else {
             errorMessage = unique.contains { $0.tool == .openCode } ? "選択したOpenCodeは完全に削除できません" : "選択したログは保護中または未対応のため、ゴミ箱へ移せません"

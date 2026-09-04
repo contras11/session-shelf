@@ -16,6 +16,7 @@ struct ParsedLog {
     var changedFiles: Set<ChangedFile> = []
     var wasTruncated = false
     var planDocument: PlanDocument?
+    var lineage: SessionLineage?
 }
 
 enum LogParsing {
@@ -118,6 +119,24 @@ enum LogParsing {
 
         if type == "session_meta" {
             result.project = payload["cwd"] as? String
+            if let sessionID = payload["id"] as? String ?? payload["session_id"] as? String {
+                let threadSource = payload["thread_source"] as? String
+                let source = payload["source"] as? [String: Any]
+                let subagent = source?["subagent"] as? [String: Any]
+                let spawn = subagent?["thread_spawn"] as? [String: Any]
+                let isSubagent = threadSource == "subagent" || subagent != nil
+                let parentID = isSubagent
+                    ? (payload["parent_thread_id"] as? String ?? spawn?["parent_thread_id"] as? String)
+                    : nil
+                result.lineage = SessionLineage(
+                    sessionID: sessionID,
+                    parentSessionID: parentID,
+                    agentName: payload["agent_nickname"] as? String
+                        ?? payload["agent_path"] as? String
+                        ?? spawn?["agent_path"] as? String,
+                    agentRole: payload["agent_role"] as? String
+                )
+            }
             return
         }
 
@@ -259,6 +278,7 @@ enum LogParsing {
         target.changedFiles.formUnion(source.changedFiles)
         target.wasTruncated = target.wasTruncated || source.wasTruncated
         target.planDocument = target.planDocument ?? source.planDocument
+        target.lineage = target.lineage ?? source.lineage
     }
 
     private static func finish(_ result: inout ParsedLog) {

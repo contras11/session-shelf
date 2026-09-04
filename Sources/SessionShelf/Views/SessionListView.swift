@@ -4,14 +4,27 @@ import SwiftUI
 struct SessionListView: View {
     @ObservedObject var store: SessionShelfStore
 
-    private var sessions: [SessionSummary] {
+    private var nodes: [SessionTreeNode] {
         guard let sessions = store.selectedShelf?.sessions else { return [] }
-        guard !store.searchText.isEmpty else { return sessions }
-        return sessions.filter {
-            $0.title.localizedCaseInsensitiveContains(store.searchText)
-                || $0.overview.localizedCaseInsensitiveContains(store.searchText)
-                || ($0.project?.localizedCaseInsensitiveContains(store.searchText) ?? false)
-        }
+        let roots = SessionHierarchy.roots(from: sessions)
+        guard !store.searchText.isEmpty else { return roots }
+        return roots.compactMap(filtering)
+    }
+
+    private var sessions: [SessionSummary] {
+        nodes.flatMap(\.displayOrder)
+    }
+
+    private func filtering(_ node: SessionTreeNode) -> SessionTreeNode? {
+        let session = node.session
+        let matches = session.title.localizedCaseInsensitiveContains(store.searchText)
+            || session.overview.localizedCaseInsensitiveContains(store.searchText)
+            || (session.project?.localizedCaseInsensitiveContains(store.searchText) ?? false)
+            || (session.lineage?.displayName.localizedCaseInsensitiveContains(store.searchText) ?? false)
+        if matches { return node }
+        let matchingChildren = node.children.compactMap(filtering)
+        guard !matchingChildren.isEmpty else { return nil }
+        return SessionTreeNode(session: session, children: matchingChildren, isOrphan: node.isOrphan)
     }
 
     var body: some View {
@@ -29,15 +42,18 @@ struct SessionListView: View {
                     get: { store.selectedSessionIDs },
                     set: { ids in store.updateSelection(ids, visibleSessions: sessions) }
                 )) {
-                    ForEach(sessions) { session in
-                        SessionRow(session: session)
-                            .tag(session.id)
+                    OutlineGroup(nodes, children: \.outlineChildren) { node in
+                        SessionRow(node: node)
+                            .tag(node.session.id)
                             .contextMenu {
-                                let candidates = store.trashCandidates(for: session)
+                                let candidates = store.trashCandidates(for: node.session)
                                 let eligibleCount = candidates.filter { $0.isSupported && !$0.isProtected }.count
-                                if eligibleCount > 0 {
+                                if SessionHierarchy.hasBlockedMemberInFamily(candidates) {
+                                    Button("親子の一部が保護中") {}
+                                        .disabled(true)
+                                } else if eligibleCount > 0 {
                                     Button(
-                                        session.tool == .openCode ? (eligibleCount == 1 ? "完全に削除" : "\(eligibleCount)件を完全に削除") : (eligibleCount == 1 ? "ゴミ箱へ移す" : "\(eligibleCount)件をゴミ箱へ移す"),
+                                        node.session.tool == .openCode ? (eligibleCount == 1 ? "完全に削除" : "\(eligibleCount)件を完全に削除") : (eligibleCount == 1 ? "ゴミ箱へ移す" : "\(eligibleCount)件をゴミ箱へ移す"),
                                         role: .destructive
                                     ) {
                                         store.requestTrash(candidates)
@@ -100,7 +116,9 @@ private struct DetectionEmptyView: View {
 }
 
 private struct SessionRow: View {
-    let session: SessionSummary
+    let node: SessionTreeNode
+
+    private var session: SessionSummary { node.session }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -109,6 +127,11 @@ private struct SessionRow: View {
                     .font(.headline)
                     .lineLimit(2)
                 Spacer(minLength: 8)
+                if node.descendantCount > 0 {
+                    Text("サブ \(node.descendantCount)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
                 KindBadge(kind: session.kind)
             }
             Text(session.overview)
@@ -120,6 +143,12 @@ private struct SessionRow: View {
                 MetaChip(systemImage: "doc", text: session.byteCount.formatted(.byteCount(style: .file)))
                 if let project = session.project {
                     MetaChip(systemImage: "folder", text: project)
+                }
+                if session.lineage?.isSubagent == true {
+                    MetaChip(systemImage: "person.2", text: session.lineage?.displayName ?? "サブエージェント")
+                }
+                if node.isOrphan {
+                    MetaChip(systemImage: "link.badge.plus", text: "親なし", tint: .orange)
                 }
                 if session.isProtected {
                     MetaChip(systemImage: "lock.fill", text: "保護", tint: .orange)

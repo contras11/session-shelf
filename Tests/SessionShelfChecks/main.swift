@@ -18,6 +18,7 @@ struct SessionShelfChecks {
         }
         var completed = 0
         try checkCodex(); completed += 1
+        try checkCodexSubagentHierarchy(); completed += 1
         try checkClaudeAndCursorSeparation(); completed += 1
         try checkCursorPlan(); completed += 1
         try checkGrok(); completed += 1
@@ -208,7 +209,11 @@ struct SessionShelfChecks {
         try withTemporaryHome { home in
             let session = home.appendingPathComponent(".codex/sessions/2026/07/27/sample.jsonl")
             try writeJSONLines([
-                ["type": "session_meta", "payload": ["cwd": "/tmp/MyProject"]],
+                ["type": "session_meta", "payload": [
+                    "id": "11111111-1111-4111-8111-111111111111",
+                    "session_id": "11111111-1111-4111-8111-111111111111",
+                    "cwd": "/tmp/MyProject"
+                ]],
                 ["type": "response_item", "payload": [
                     "type": "message", "role": "developer",
                     "content": [["type": "input_text", "text": "<app-context>\n内部のアプリ情報\n</app-context>"]]
@@ -250,6 +255,7 @@ struct SessionShelfChecks {
             try require(shelf.sessions.count == 1, "Codexの件数が不正")
             let item = shelf.sessions[0]
             try require(item.project == "/tmp/MyProject", "Codexのプロジェクト抽出に失敗")
+            try require(item.lineage?.sessionID == "11111111-1111-4111-8111-111111111111", "CodexのセッションID抽出に失敗")
             try require(item.title == "一覧画面を作ってください", "Codexのタイトル抽出に失敗")
             try require(!item.overview.contains("app-context"), "Codexの概要に内部情報が混入")
             let detail = try repository.loadDetail(for: item)
@@ -281,6 +287,56 @@ struct SessionShelfChecks {
                     .toolResult(result: .success)
                 ],
                 "Codexのツール入出力を会話順に保持できない"
+            )
+        }
+    }
+
+    private static func checkCodexSubagentHierarchy() throws {
+        try withTemporaryHome { home in
+            let directory = home.appendingPathComponent(".codex/archived_sessions")
+            let parentID = "22222222-2222-4222-8222-222222222222"
+            let childID = "33333333-3333-4333-8333-333333333333"
+            let orphanID = "44444444-4444-4444-8444-444444444444"
+            try writeJSONLines([
+                ["type": "session_meta", "payload": [
+                    "id": parentID,
+                    "session_id": parentID,
+                    "cwd": "/tmp/Parent"
+                ]]
+            ], to: directory.appendingPathComponent("rollout-\(parentID).jsonl"))
+            try writeJSONLines([
+                ["type": "session_meta", "payload": [
+                    "id": childID,
+                    "session_id": parentID,
+                    "parent_thread_id": parentID,
+                    "thread_source": "subagent",
+                    "agent_nickname": "調査担当",
+                    "agent_role": "explorer",
+                    "cwd": "/tmp/Parent",
+                    "source": ["subagent": ["thread_spawn": ["parent_thread_id": parentID, "depth": 1]]]
+                ]]
+            ], to: directory.appendingPathComponent("rollout-\(childID).jsonl"))
+            try writeJSONLines([
+                ["type": "session_meta", "payload": [
+                    "id": orphanID,
+                    "session_id": "55555555-5555-4555-8555-555555555555",
+                    "parent_thread_id": "55555555-5555-4555-8555-555555555555",
+                    "thread_source": "subagent",
+                    "cwd": "/tmp/Orphan"
+                ]]
+            ], to: directory.appendingPathComponent("rollout-\(orphanID).jsonl"))
+
+            let sessions = SessionRepository(homeDirectory: home).scan(.codex).sessions
+            let roots = SessionHierarchy.roots(from: sessions)
+            let parent = try requireValue(roots.first { $0.session.lineage?.sessionID == parentID }, "Codex親セッションがない")
+            let orphan = try requireValue(roots.first { $0.session.lineage?.sessionID == orphanID }, "Codex親なしサブエージェントがない")
+            try require(parent.children.count == 1, "Codexサブエージェントを親へ結びつけられない")
+            try require(parent.children[0].session.lineage?.displayName == "調査担当", "Codexサブエージェント名を抽出できない")
+            try require(orphan.isOrphan, "親がないCodexサブエージェントを識別できない")
+            try require(
+                SessionHierarchy.deletionOrder(startingAt: [parent.session], in: sessions).map(\.id)
+                    == [parent.children[0].session.id, parent.session.id],
+                "Codex親子の削除順が不正"
             )
         }
     }

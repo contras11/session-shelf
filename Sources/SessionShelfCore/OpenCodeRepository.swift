@@ -15,7 +15,7 @@ public enum OpenCodeRepository {
             let archived = value(row, "time_archived")
             let protected = compacting != nil || (Date().timeIntervalSince(updated) < 1800)
             let reason = compacting != nil ? "OpenCodeが圧縮処理中" : (protected ? "更新直後のセッション" : nil)
-            return SessionSummary(id: "opencode:\(id)", tool: .openCode, title: title, date: updated, byteCount: 0, project: value(row, "directory") ?? value(row, "project_id"), overview: archived != nil ? "OpenCodeアーカイブ済みセッション" : "OpenCodeセッション", sourceURL: database, deletionURL: database, isProtected: protected, protectionReason: reason)
+            return SessionSummary(id: "opencode:\(id)", tool: .openCode, title: title, date: updated, byteCount: 0, project: value(row, "directory") ?? value(row, "project_id"), overview: archived != nil ? "OpenCodeアーカイブ済みセッション" : "OpenCodeセッション", sourceURL: database, deletionURL: database, lineage: SessionLineage(sessionID: id, parentSessionID: value(row, "parent_id")), isProtected: protected, protectionReason: reason)
         }.sorted { $0.date > $1.date }
     }
 

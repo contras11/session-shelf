@@ -289,6 +289,7 @@ public struct SessionRepository: @unchecked Sendable {
             sourceURL: url,
             deletionURL: deletionURL,
             relatedURLs: related,
+            lineage: parsed?.lineage,
             isProtected: protected,
             protectionReason: protected ? "更新中の可能性があるセッション" : nil
         )

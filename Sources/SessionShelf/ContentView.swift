@@ -87,6 +87,14 @@ struct ContentView: View {
     private var trashDialogTitle: String {
         guard let request = store.trashRequest else { return "ゴミ箱へ移しますか？" }
         if request.sessions.contains(where: { $0.tool == .openCode }) { return "OpenCodeセッションを完全に削除しますか？" }
+        if request.rootSessionCount > 0, request.subagentCount > 0 {
+            return "親セッションとサブエージェントをゴミ箱へ移しますか？"
+        }
+        if request.rootSessionCount == 0, request.subagentCount > 0 {
+            return request.subagentCount == 1
+                ? "このサブエージェントをゴミ箱へ移しますか？"
+                : "選択した\(request.subagentCount)件のサブエージェントをゴミ箱へ移しますか？"
+        }
         return request.sessions.count == 1
             ? "このセッションをゴミ箱へ移しますか？"
             : "選択した\(request.sessions.count)件をゴミ箱へ移しますか？"
@@ -102,12 +110,23 @@ struct ContentView: View {
     private func trashMessage(for request: TrashRequest) -> String {
         if request.sessions.contains(where: { $0.tool == .openCode }) {
             var parts = ["ゴミ箱へ移らず復元できません。公式OpenCode CLIで完全に削除します。"]
+            if request.subagentCount > 0 {
+                parts.append("親セッション\(request.rootSessionCount)件とサブエージェント\(request.subagentCount)件を子から順に削除します。")
+            }
             if request.excludedCount > 0 {
                 parts.append("\(request.excludedCount)件は保護中または未対応のため除外します。")
             }
             return parts.joined()
         }
         var parts: [String] = []
+        if request.subagentCount > 0 {
+            if request.rootSessionCount > 0 {
+                parts.append("親セッション\(request.rootSessionCount)件とサブエージェント\(request.subagentCount)件をまとめて移します。")
+            } else {
+                parts.append("サブエージェント\(request.subagentCount)件を移します。")
+            }
+            parts.append("対象容量は\(request.totalByteCount.formatted(.byteCount(style: .file)))です。")
+        }
         if request.eligible.contains(where: includesRelatedFiles) {
             let relatedCount = request.eligible.reduce(0) { $0 + $1.relatedURLs.count }
             if relatedCount > 0 {

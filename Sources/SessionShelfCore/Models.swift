@@ -191,6 +191,33 @@ public enum SessionDeletionMode: Sendable, Equatable, Hashable {
     case openCodeCLI(sessionID: String)
 }
 
+public struct SessionLineage: Hashable, Sendable {
+    public let sessionID: String
+    public let parentSessionID: String?
+    public let agentName: String?
+    public let agentRole: String?
+
+    public init(
+        sessionID: String,
+        parentSessionID: String? = nil,
+        agentName: String? = nil,
+        agentRole: String? = nil
+    ) {
+        self.sessionID = sessionID
+        self.parentSessionID = parentSessionID
+        self.agentName = agentName
+        self.agentRole = agentRole
+    }
+
+    public var isSubagent: Bool { parentSessionID != nil }
+
+    public var displayName: String {
+        if let agentName, !agentName.isEmpty { return agentName }
+        if let agentRole, !agentRole.isEmpty { return agentRole }
+        return "サブエージェント"
+    }
+}
+
 public struct SessionSummary: Identifiable, Hashable, Sendable {
     public let id: String
     public let tool: AITool
@@ -203,6 +230,7 @@ public struct SessionSummary: Identifiable, Hashable, Sendable {
     public let sourceURL: URL
     public let deletionURL: URL
     public let relatedURLs: [URL]
+    public let lineage: SessionLineage?
     public let isSupported: Bool
     public let isProtected: Bool
     public let protectionReason: String?
@@ -220,6 +248,7 @@ public struct SessionSummary: Identifiable, Hashable, Sendable {
         sourceURL: URL,
         deletionURL: URL? = nil,
         relatedURLs: [URL] = [],
+        lineage: SessionLineage? = nil,
         isSupported: Bool = true,
         isProtected: Bool = false,
         protectionReason: String? = nil,
@@ -236,6 +265,7 @@ public struct SessionSummary: Identifiable, Hashable, Sendable {
         self.sourceURL = sourceURL
         self.deletionURL = deletionURL ?? sourceURL
         self.relatedURLs = relatedURLs
+        self.lineage = lineage
         self.isSupported = isSupported
         self.isProtected = isProtected
         self.protectionReason = protectionReason
