@@ -28,10 +28,9 @@ struct ContentView: View {
         .task {
             store.reload()
             store.reloadStorage()
-            store.reconcileSidebarSelection(visibleTools: sidebarPreferences.visibleTools)
         }
-        .onChange(of: sidebarPreferences.visibleTools) { _, visibleTools in
-            store.reconcileSidebarSelection(visibleTools: visibleTools)
+        .onChange(of: sidebarPreferences.visibleTools, initial: true) { _, visibleTools in
+            store.applyToolVisibility(visibleTools)
         }
         .onReceive(NotificationCenter.default.publisher(for: .sessionShelfReload)) { _ in
             if store.isStoragePresented {
@@ -48,22 +47,13 @@ struct ContentView: View {
         } message: {
             Text(store.errorMessage ?? "")
         }
-        .confirmationDialog(
-            trashDialogTitle,
-            isPresented: Binding(
-                get: { store.trashRequest != nil },
-                set: { if !$0 { store.trashRequest = nil } }
-            ),
-            titleVisibility: .visible,
-            presenting: store.trashRequest
-        ) { request in
-            Button(trashButtonTitle(for: request), role: .destructive) {
-                store.confirmTrash(request)
-            }
-            .disabled(store.isDeletingSessions)
-            Button("キャンセル", role: .cancel) { store.trashRequest = nil }
-        } message: { request in
-            Text(trashMessage(for: request))
+        .sheet(item: $store.trashRequest) { request in
+            SessionDeletePreviewSheet(
+                request: request,
+                isDeleting: store.isDeletingSessions,
+                onConfirm: { store.confirmTrash(request) },
+                onCancel: { store.trashRequest = nil }
+            )
         }
         .confirmationDialog(
             storageTrashDialogTitle,
@@ -82,69 +72,6 @@ struct ContentView: View {
         } message: { request in
             Text(storageTrashMessage(for: request))
         }
-    }
-
-    private var trashDialogTitle: String {
-        guard let request = store.trashRequest else { return "ゴミ箱へ移しますか？" }
-        if request.sessions.contains(where: { $0.tool == .openCode }) { return "OpenCodeセッションを完全に削除しますか？" }
-        if request.rootSessionCount > 0, request.subagentCount > 0 {
-            return "親セッションとサブエージェントをゴミ箱へ移しますか？"
-        }
-        if request.rootSessionCount == 0, request.subagentCount > 0 {
-            return request.subagentCount == 1
-                ? "このサブエージェントをゴミ箱へ移しますか？"
-                : "選択した\(request.subagentCount)件のサブエージェントをゴミ箱へ移しますか？"
-        }
-        return request.sessions.count == 1
-            ? "このセッションをゴミ箱へ移しますか？"
-            : "選択した\(request.sessions.count)件をゴミ箱へ移しますか？"
-    }
-
-    private func trashButtonTitle(for request: TrashRequest) -> String {
-        if request.sessions.contains(where: { $0.tool == .openCode }) {
-            return request.eligible.count == 1 ? "完全に削除" : "\(request.eligible.count)件を完全に削除"
-        }
-        return request.eligible.count == 1 ? "ゴミ箱へ移す" : "\(request.eligible.count)件をゴミ箱へ移す"
-    }
-
-    private func trashMessage(for request: TrashRequest) -> String {
-        if request.sessions.contains(where: { $0.tool == .openCode }) {
-            var parts = ["ゴミ箱へ移らず復元できません。公式OpenCode CLIで完全に削除します。"]
-            if request.subagentCount > 0 {
-                parts.append("親セッション\(request.rootSessionCount)件とサブエージェント\(request.subagentCount)件を子から順に削除します。")
-            }
-            if request.excludedCount > 0 {
-                parts.append("\(request.excludedCount)件は保護中または未対応のため除外します。")
-            }
-            return parts.joined()
-        }
-        var parts: [String] = []
-        if request.subagentCount > 0 {
-            if request.rootSessionCount > 0 {
-                parts.append("親セッション\(request.rootSessionCount)件とサブエージェント\(request.subagentCount)件をまとめて移します。")
-            } else {
-                parts.append("サブエージェント\(request.subagentCount)件を移します。")
-            }
-            parts.append("対象容量は\(request.totalByteCount.formatted(.byteCount(style: .file)))です。")
-        }
-        if request.eligible.contains(where: includesRelatedFiles) {
-            let relatedCount = request.eligible.reduce(0) { $0 + $1.relatedURLs.count }
-            if relatedCount > 0 {
-                parts.append("会話ログと関連ファイル\(relatedCount)件もゴミ箱へ移します。")
-            } else {
-                parts.append("会話ログと、同じセッションの関連ファイルもゴミ箱へ移します。")
-            }
-        }
-        parts.append("完全削除は行いません。macOSのゴミ箱から戻せます。")
-        if request.excludedCount > 0 {
-            parts.append("\(request.excludedCount)件は保護中または未対応のため除外します。")
-        }
-        return parts.joined()
-    }
-
-    private func includesRelatedFiles(_ session: SessionSummary) -> Bool {
-        !session.relatedURLs.isEmpty
-            || session.deletionURL.standardizedFileURL != session.sourceURL.standardizedFileURL
     }
 
     private var storageTrashDialogTitle: String {

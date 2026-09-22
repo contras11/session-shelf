@@ -28,6 +28,8 @@ final class SidebarPreferencesTests: XCTestCase {
         XCTAssertEqual(Set(preferences.orderedTools), Set(AITool.allCases))
         XCTAssertEqual(preferences.orderedTools.count, AITool.allCases.count)
         XCTAssertEqual(preferences.hiddenTools, [.claudeCode])
+        XCTAssertTrue(preferences.orderedTools.contains(.omp))
+        XCTAssertTrue(preferences.isVisible(.omp))
     }
 
     func test初期設定へ戻せる() {
@@ -47,20 +49,44 @@ final class SidebarPreferencesTests: XCTestCase {
     func test非表示になった選択項目を安全な表示先へ移す() {
         let store = SessionShelfStore()
         store.selectedDestination = .tool(.codex)
-        store.reconcileSidebarSelection(visibleTools: [.claudeCode, .openCode])
+        store.applyToolVisibility([.claudeCode, .openCode])
         XCTAssertEqual(store.selectedDestination, .tool(.claudeCode))
+        XCTAssertEqual(store.visibleTools, [.claudeCode, .openCode])
 
         store.selectedDestination = .storage(.tool(.openCode))
-        store.reconcileSidebarSelection(visibleTools: [.claudeCode])
+        store.applyToolVisibility([.claudeCode])
         XCTAssertEqual(store.selectedDestination, .storage(.all))
 
         store.selectedDestination = .tool(.claudeCode)
-        store.reconcileSidebarSelection(visibleTools: [])
+        store.applyToolVisibility([])
         XCTAssertEqual(store.selectedDestination, .storage(.all))
     }
 
-    func test全サービスの公式アイコンを読める() {
+    func test非表示ツールはストレージ集計から外れる() {
+        let store = SessionShelfStore()
+        let now = Date()
+        func item(_ tool: AITool, _ bytes: Int64) -> StorageItem {
+            StorageItem(
+                id: "\(tool.rawValue):fixture", tool: tool, category: .cache, safety: .regeneratable,
+                title: tool.displayName, explanation: "", deletionImpact: "", safetyReason: "",
+                byteCount: bytes, fileCount: 1, modifiedAt: now, location: URL(fileURLWithPath: "/tmp/\(tool.rawValue)")
+            )
+        }
+        store.storageReport = StorageScanReport(items: [item(.codex, 100), item(.omp, 50)])
+        XCTAssertEqual(store.storageTotalByteCount(for: .all), 150)
+
+        store.applyToolVisibility([.codex])
+        XCTAssertEqual(store.storageTotalByteCount(for: .all), 100)
+        XCTAssertEqual(store.storageItems(for: .tool(.omp)), [])
+        XCTAssertEqual(store.storageReport.items.count, 2)
+    }
+
+    func testアイコン素材があるサービスの公式アイコンを読める() {
         for tool in AITool.allCases {
+            if tool.iconAssetName == nil {
+                XCTAssertNil(ToolIconView.image(for: tool))
+                continue
+            }
             XCTAssertNotNil(ToolIconView.image(for: tool), "\(tool.displayName)のアイコンを読み込めません")
         }
     }

@@ -56,6 +56,8 @@ struct ConversationView: View {
                                 MessageBubble(entry: entry)
                             case .context(let entry, let label):
                                 ContextBlock(label: label, entry: entry)
+                            case .thinking(let entry):
+                                ThinkingBlock(entry: entry)
                             case .operations(let id, let entries):
                                 OperationGroup(id: id, entries: entries)
                             }
@@ -71,11 +73,12 @@ struct ConversationView: View {
 private enum ConversationDisplayItem: Identifiable {
     case message(ConversationEntry)
     case context(ConversationEntry, label: String)
+    case thinking(ConversationEntry)
     case operations(id: UUID, entries: [ConversationEntry])
 
     var id: UUID {
         switch self {
-        case .message(let entry), .context(let entry, _): entry.id
+        case .message(let entry), .context(let entry, _), .thinking(let entry): entry.id
         case .operations(let id, _): id
         }
     }
@@ -107,6 +110,9 @@ private enum ConversationDisplayItem: Identifiable {
             case .context(let label):
                 flushOperations()
                 items.append(.context(entry, label: label))
+            case .thinking:
+                flushOperations()
+                items.append(.thinking(entry))
             }
         }
         flushOperations()
@@ -240,6 +246,32 @@ private struct OperationDetail: View {
     private func isCommand(_ name: String) -> Bool {
         let lower = name.lowercased()
         return lower.contains("exec") || lower.contains("shell") || lower.contains("command") || lower.contains("bash")
+    }
+}
+
+private struct ThinkingBlock: View {
+    let entry: ConversationEntry
+    @StateObject private var disclosureState = DisclosureState()
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $disclosureState.isExpanded) {
+            MarkdownContentView(text: entry.text, compact: true)
+                .padding(.top, 8)
+        } label: {
+            HStack(spacing: 6) {
+                Label("思考（\(entry.text.count)文字）", systemImage: "brain")
+                    .font(.subheadline.weight(.medium))
+                if let timestamp = entry.timestamp {
+                    Text(timestamp, format: .dateTime.hour().minute())
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .padding(12)
+        .background(Color.purple.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .accessibilityLabel("思考")
+        .accessibilityValue(disclosureState.isExpanded ? "展開中" : "折りたたみ中")
     }
 }
 

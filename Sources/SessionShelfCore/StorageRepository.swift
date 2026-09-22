@@ -141,6 +141,7 @@ public struct StorageRepository: @unchecked Sendable {
         case .cursorDesktop, .cursorCLI: homeDirectory.appendingPathComponent(".cursor", isDirectory: true)
         case .grokBuildCLI: homeDirectory.appendingPathComponent(".grok", isDirectory: true)
         case .openCode: homeDirectory.appendingPathComponent(".local/share/opencode", isDirectory: true)
+        case .omp: homeDirectory.appendingPathComponent(".omp", isDirectory: true)
         }
     }
 
@@ -175,6 +176,8 @@ public struct StorageRepository: @unchecked Sendable {
             } else if (tool == .cursorDesktop || tool == .cursorCLI), name == "plugins" {
                 result.append(contentsOf: children(of: child))
             } else if tool == .grokBuildCLI, name == "downloads" {
+                result.append(contentsOf: children(of: child))
+            } else if tool == .omp, name == "agent" {
                 result.append(contentsOf: children(of: child))
             } else {
                 result.append(child)
@@ -343,7 +346,28 @@ enum StoragePolicy {
             if path.hasPrefix("cache/") && ["node_modules", "bin", "models.json"].contains(name) { return regeneratable(.cache, title: "OpenCodeキャッシュ", explanation: "OpenCodeが再生成できるキャッシュです。") }
             if path.contains("/log") || path.hasPrefix("log") || path.contains("tool-output") || path.hasSuffix("prompt-history.jsonl") { return review(.diagnostic, title: "OpenCode記録", explanation: "再生成できない可能性がある記録です。", impact: "履歴や診断情報を失う可能性があります。") }
             return protectedCategory(for: path, name: name)
+        case .omp:
+            return classifyOMP(path: path, name: name)
         }
+    }
+
+    private static func classifyOMP(path: String, name: String) -> StorageRepository.Classification {
+        if path == "agent/cache" {
+            return regeneratable(.cache, title: "ompのキャッシュ", explanation: "ompが再取得または再作成できる補助データです。")
+        }
+        if path == "agent/sessions" {
+            return protected(.conversation, title: "会話履歴", explanation: "ompの会話ログとbashログです。", reason: "会話画面で内容を確認して個別に整理してください")
+        }
+        if path == "agent/terminal-sessions" {
+            return review(.diagnostic, title: "ompの端末記録", explanation: "端末セッションの復元や確認に使われる記録です。", impact: "過去の端末状態を確認できなくなる場合があります。")
+        }
+        if ["agent.db", "history.db", "models.db"].contains(name) || name.hasPrefix("config.yml") {
+            return protected(.configuration, title: knownTitle(for: path, name: name), explanation: "ompの設定、履歴、または内部データベースです。", reason: "設定や履歴を失わないため保護しています")
+        }
+        if path == "logs" {
+            return protected(.diagnostic, title: "ompのログ", explanation: "ompの動作ログです。", reason: "内容を読まずに安全性を判断できないため保護しています")
+        }
+        return protectedCategory(for: path, name: name)
     }
 
     private static func classifyCodex(path: String, components: [String], name: String, modifiedAt: Date, now: Date) -> StorageRepository.Classification {

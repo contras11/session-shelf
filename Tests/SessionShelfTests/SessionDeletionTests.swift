@@ -47,7 +47,9 @@ final class SessionDeletionTests: XCTestCase {
             unknown.id: UnexpectedDeletionError.failed
         ])
         let store = makeStore(repository: fixture.repository, sessions: sessions, recorder: recorder)
-        let request = TrashRequest(sessions: sessions)
+        let request = TrashRequest(sessions: sessions, plan: fixture.repository.deletionPlan(for: sessions))
+        XCTAssertEqual(request.plan.items.count, sessions.count)
+        XCTAssertTrue(request.plan.items.allSatisfy { $0.kind == .sessionLog })
 
         store.confirmTrash(request)
         XCTAssertTrue(store.isDeletingSessions)
@@ -74,7 +76,7 @@ final class SessionDeletionTests: XCTestCase {
         let recorder = DeletionRecorder(failures: failures)
         let store = makeStore(repository: fixture.repository, sessions: sessions, recorder: recorder)
 
-        store.confirmTrash(TrashRequest(sessions: sessions))
+        store.confirmTrash(TrashRequest(sessions: sessions, plan: fixture.repository.deletionPlan(for: sessions)))
         await waitForDeletion(in: store)
 
         XCTAssertEqual(Set(store.selectedShelf?.sessions.map(\.id) ?? []), Set(sessions.map(\.id)))

@@ -74,7 +74,7 @@ struct StorageListView: View {
                 set: { store.updateStorageSelection($0, visibleItems: store.visibleStorageItems) }
             )) {
                 if store.storageToolFilter == .all {
-                    ForEach(AITool.allCases) { tool in
+                    ForEach(store.visibleTools) { tool in
                         let items = store.visibleStorageItems.filter { $0.tool == tool }
                         if !items.isEmpty {
                             Section(tool.displayName) {

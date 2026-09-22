@@ -56,19 +56,41 @@ final class SessionHierarchyTests: XCTestCase {
         XCTAssertTrue(roots[0].isOrphan)
     }
 
+    func testプロジェクト区分は根だけを束ねて子を分割しない() {
+        let base = Date(timeIntervalSince1970: 1_000_000)
+        let parent = session(id: "parent", providerID: "p", project: "/tmp/alpha", date: base)
+        let child = session(id: "child", providerID: "c", parentID: "p", project: "/tmp/other", date: base.addingTimeInterval(10))
+        let beta = session(id: "beta", providerID: "b", project: "/tmp/beta", date: base.addingTimeInterval(100))
+        let none = session(id: "none", providerID: "n", project: nil, date: base.addingTimeInterval(1_000))
+        let sameName = session(id: "same", providerID: "s", project: "/var/beta", date: base.addingTimeInterval(5))
+
+        let sections = SessionHierarchy.projectSections(from: SessionHierarchy.roots(from: [parent, child, beta, none, sameName]))
+
+        XCTAssertEqual(sections.map(\.project), ["/tmp/beta", "/tmp/alpha", "/var/beta", nil])
+        XCTAssertEqual(sections.map(\.displayName), ["/tmp/beta", "alpha", "/var/beta", "プロジェクト未設定"])
+        let alpha = sections.first { $0.project == "/tmp/alpha" }
+        XCTAssertEqual(alpha?.sessionCount, 2)
+        XCTAssertEqual(alpha?.totalByteCount, 2)
+        XCTAssertEqual(alpha?.latestDate, base.addingTimeInterval(10))
+        XCTAssertNil(sections.first { $0.project == "/tmp/other" })
+        XCTAssertEqual(SessionHierarchy.projectSections(from: SessionHierarchy.roots(from: [parent, child])).count, 1)
+    }
+
     private func session(
         id: String,
         providerID: String,
         parentID: String? = nil,
+        project: String? = nil,
+        date: Date = .distantPast,
         isProtected: Bool = false
     ) -> SessionSummary {
         SessionSummary(
             id: id,
             tool: .codex,
             title: id,
-            date: .distantPast,
+            date: date,
             byteCount: 1,
-            project: nil,
+            project: project,
             overview: id,
             sourceURL: URL(fileURLWithPath: "/tmp/\(id).jsonl"),
             lineage: SessionLineage(sessionID: providerID, parentSessionID: parentID),

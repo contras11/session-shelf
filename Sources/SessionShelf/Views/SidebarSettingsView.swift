@@ -33,7 +33,7 @@ struct SidebarSettingsView: View {
             .listStyle(.inset)
 
             HStack {
-                Text("非表示にしてもログの検出・読み取り対象は変わりません。")
+                Text("非表示にしたツールはサイドバーとストレージ集計から外れます。ログの検出・読み取りは止まりません。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
