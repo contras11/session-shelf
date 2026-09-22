@@ -41,18 +41,42 @@ enum OMPRepository {
     }
 
     /// 観測した符号化: realpath の先頭スラッシュを外し、`/` を `-` に置換して `--` で囲む。
-    static func decodeProject(_ encoded: String) -> String? {
+    static func decodeProject(_ encoded: String, fileManager: FileManager = .default) -> String? {
         if encoded == "-" { return nil }
         guard encoded.count >= 4, encoded.hasPrefix("--"), encoded.hasSuffix("--") else { return encoded }
         let inner = String(encoded.dropFirst(2).dropLast(2))
+        if let existing = longestExistingPath(inner, fileManager: fileManager) { return existing }
         return "/" + inner.replacingOccurrences(of: "-", with: "/")
+    }
+
+    /// `-` は `/` にもフォルダ名のハイフンにもなる。各階層で、残りの文字列に一致する最長の実在フォルダ名を選ぶ。
+    private static func longestExistingPath(_ inner: String, fileManager: FileManager) -> String? {
+        var current = "/"
+        var rest = inner[...]
+        while !rest.isEmpty {
+            guard let names = try? fileManager.contentsOfDirectory(atPath: current) else { return nil }
+            guard let match = names.filter({ name in
+                rest == name[...] || rest.hasPrefix(name + "-")
+            }).max(by: { $0.count < $1.count }) else { return nil }
+            current = URL(fileURLWithPath: current).appendingPathComponent(match).path
+            if rest == match[...] {
+                rest = rest[rest.endIndex...]
+            } else {
+                let next = rest.index(rest.startIndex, offsetBy: match.count + 1)
+                rest = rest[next...]
+            }
+        }
+        var isDirectory = ObjCBool(false)
+        guard fileManager.fileExists(atPath: current, isDirectory: &isDirectory), isDirectory.boolValue else { return nil }
+        return current
     }
 
     static func scan(
         home: URL,
         fileManager: FileManager,
         modifiedDate: (URL) -> Date,
-        isRecentlyModified: (URL) -> Bool
+        isRecentlyModified: (URL) -> Bool,
+        liveProjects: Set<String>
     ) -> [SessionSummary] {
         let root = sessionsRoot(home: home)
         guard fileManager.fileExists(atPath: root.path) else { return [] }
@@ -62,19 +86,22 @@ enum OMPRepository {
                 guard let file = OMPSessionFile(url: candidate, sessionsRoot: root, fileManager: fileManager) else { continue }
                 let parsed = try? LogParsing.parseJSONL(at: file.jsonl, tool: .omp, byteLimit: LogLimits.listBytes)
                 let logs = file.logsDirectory(fileManager: fileManager)
-                let protected = isRecentlyModified(file.jsonl) || logs.map(isRecentlyModified) == true
+                let project = decodeProject(file.encodedProject, fileManager: fileManager)
+                let live = project.map { liveProjects.contains(LiveSessions.canonicalPath($0)) } ?? false
+                let recent = isRecentlyModified(file.jsonl) || logs.map(isRecentlyModified) == true
+                let protected = live || recent
                 sessions.append(SessionSummary(
                     id: "omp:\(file.jsonl.path)",
                     tool: .omp,
                     title: parsed?.title ?? "名称未設定のセッション",
                     date: modifiedDate(file.jsonl),
                     byteCount: Int64((try? file.jsonl.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0),
-                    project: decodeProject(file.encodedProject),
+                    project: project,
                     overview: parsed?.overview ?? "会話の概要を取得できませんでした",
                     sourceURL: file.jsonl,
                     relatedURLs: logs.map { [$0] } ?? [],
                     isProtected: protected,
-                    protectionReason: protected ? "更新中の可能性があるセッション" : nil
+                    protectionReason: live ? LiveSessions.reason : (recent ? "更新中の可能性があるセッション" : nil)
                 ))
             }
         }

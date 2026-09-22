@@ -48,7 +48,7 @@ extension AITool {
         case .cursorDesktop, .cursorCLI: "cursor"
         case .grokBuildCLI: "grok-build"
         case .openCode: "opencode"
-        case .omp: nil
+        case .omp: "omp"
         }
     }
 }

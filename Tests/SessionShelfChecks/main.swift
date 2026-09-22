@@ -41,6 +41,9 @@ struct SessionShelfChecks {
         try checkOpenCodeStorageBoundaries(); completed += 1
         try checkOMP(); completed += 1
         try checkOMPStorageClassification(); completed += 1
+        try checkOMPProjectHyphen(); completed += 1
+        try checkLiveSessions(); completed += 1
+        try checkBodySearch(); completed += 1
         print("Session Shelf: \(completed)件の検証に成功")
     }
 
@@ -1111,6 +1114,115 @@ struct SessionShelfChecks {
         while current.path.hasPrefix(home.path), current != home {
             try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: current.path)
             current.deleteLastPathComponent()
+        }
+    }
+
+    private static func checkOMPProjectHyphen() throws {
+        let leaf = "session-shelf-\(UUID().uuidString)"
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(leaf, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let real = directory.resolvingSymlinksInPath().path
+        let encoded = "--" + String(real.dropFirst()).replacingOccurrences(of: "/", with: "-") + "--"
+        let oldDate = Date(timeIntervalSinceNow: -7_200)
+        try withTemporaryHome { home in
+            let stem = "2026-09-17T06-38-28-000Z_22222222-2222-4222-8222-222222222222"
+            let jsonl = home.appendingPathComponent(".omp/agent/sessions/\(encoded)/\(stem).jsonl")
+            try writeJSONLines([
+                ["type": "title", "title": "hyphen"],
+                ["type": "message", "message": ["role": "user", "content": [["type": "text", "text": "x"]]]]
+            ], to: jsonl)
+            try setTreeModificationDate(oldDate, from: jsonl, through: home)
+            let shelf = SessionRepository(homeDirectory: home, isProcessAlive: { _ in false }).scan(.omp)
+            try require(shelf.sessions.count == 1, "ハイフン付きプロジェクトを読めない")
+            try require(shelf.sessions[0].project == real, "ハイフンをスラッシュへ置換した: \(shelf.sessions[0].project ?? "nil")")
+
+            let missing = home.appendingPathComponent(".omp/agent/sessions/--no-such-shelf-path-zz--/\(stem).jsonl")
+            try writeJSONLines([
+                ["type": "title", "title": "missing"]
+            ], to: missing)
+            try setTreeModificationDate(oldDate, from: missing, through: home)
+            let fallback = SessionRepository(homeDirectory: home, isProcessAlive: { _ in false }).scan(.omp)
+            let decoded = fallback.sessions.first { $0.title == "missing" }?.project
+            try require(decoded == "/no/such/shelf/path/zz", "実在しないパスの置換が違う: \(decoded ?? "nil")")
+        }
+    }
+
+    private static func checkLiveSessions() throws {
+        let oldDate = Date(timeIntervalSinceNow: -7_200)
+        let sessionID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        try withTemporaryHome { home in
+            let jsonl = home.appendingPathComponent(".claude/projects/-tmp/\(sessionID).jsonl")
+            try writeJSONLines([
+                ["type": "user", "message": ["role": "user", "content": "hello"]]
+            ], to: jsonl)
+            try setTreeModificationDate(oldDate, from: jsonl, through: home)
+            let record = home.appendingPathComponent(".claude/sessions/live.json")
+
+            try write(#"{"pid":424242,"sessionId":"\#(sessionID)"}"#, to: record)
+            let alive = SessionRepository(
+                homeDirectory: home,
+                isProcessAlive: { $0 == 424242 },
+                processStartedAt: { _ in nil }
+            ).scan(.claudeCode).sessions.first { $0.sourceURL.lastPathComponent.hasPrefix(sessionID) }
+            try require(alive?.isProtected == true && alive?.protectionReason == "実行中のセッション", "開始時刻のない生存プロセスを保護できない")
+
+            try write(#"{"pid":424242,"sessionId":"\#(sessionID)","procStart":"Wed Jan  1 00:00:00 2020"}"#, to: record)
+            let mismatched = SessionRepository(
+                homeDirectory: home,
+                isProcessAlive: { $0 == 424242 },
+                processStartedAt: { _ in Date() }
+            ).scan(.claudeCode).sessions.first { $0.sourceURL.lastPathComponent.hasPrefix(sessionID) }
+            try require(mismatched?.isProtected == false, "開始時刻が違うプロセスを実行中にした")
+
+            let dead = SessionRepository(
+                homeDirectory: home,
+                isProcessAlive: { _ in false }
+            ).scan(.claudeCode).sessions.first { $0.sourceURL.lastPathComponent.hasPrefix(sessionID) }
+            try require(dead?.isProtected == false, "終了したプロセスを実行中にした")
+
+            let stem = "2026-09-17T06-38-28-000Z_33333333-3333-4333-8333-333333333333"
+            let ompLog = home.appendingPathComponent(".omp/agent/sessions/--private-tmp--/\(stem).jsonl")
+            try writeJSONLines([["type": "title", "title": "live-omp"]], to: ompLog)
+            try setTreeModificationDate(oldDate, from: ompLog, through: home)
+            let client = home.appendingPathComponent(".omp/run/daemons/d1/clients/c1.json")
+            try write(#"{"pid":424242,"id":"424242-not-a-session","projectDir":"/tmp"}"#, to: client)
+            let liveOMP = SessionRepository(
+                homeDirectory: home,
+                isProcessAlive: { $0 == 424242 }
+            ).scan(.omp).sessions.first
+            try require(
+                liveOMP?.isProtected == true && liveOMP?.protectionReason == "実行中のセッション",
+                "生存中のompプロジェクトを保護できない: \(liveOMP?.protectionReason ?? "nil")"
+            )
+            let quietOMP = SessionRepository(
+                homeDirectory: home,
+                isProcessAlive: { _ in false }
+            ).scan(.omp).sessions.first
+            try require(quietOMP?.isProtected == false, "終了したompプロセスを実行中にした")
+        }
+    }
+
+    private static func checkBodySearch() throws {
+        let oldDate = Date(timeIntervalSinceNow: -7_200)
+        try withTemporaryHome { home in
+            let stem = "2026-09-17T06-38-28-000Z_44444444-4444-4444-8444-444444444444"
+            let jsonl = home.appendingPathComponent(".omp/agent/sessions/--private-tmp--/\(stem).jsonl")
+            try writeJSONLines([
+                ["type": "title", "title": "題名だけ"],
+                ["type": "message", "message": ["role": "user", "content": [["type": "text", "text": "本文の ponytailneedle を探す"]]]]
+            ], to: jsonl)
+            try setTreeModificationDate(oldDate, from: jsonl, through: home)
+            let session = SessionRepository(homeDirectory: home, isProcessAlive: { _ in false }).scan(.omp).sessions[0]
+            let database = home.appendingPathComponent("state.vscdb")
+            try write("ponytailneedle", to: database)
+            let unsupported = SessionSummary(
+                id: "cursor:db", tool: .cursorDesktop, title: "db", date: oldDate, byteCount: 1,
+                project: nil, overview: "", sourceURL: database, isSupported: false
+            )
+            let hits = SessionBodySearch.previews(for: [session, unsupported], query: "PonytailNeedle")
+            try require(hits[session.id]?.contains("ponytailneedle") == true, "会話本文を検索できない")
+            try require(hits[unsupported.id] == nil, "未対応のデータベースを本文検索した")
         }
     }
 

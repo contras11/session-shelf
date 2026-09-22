@@ -26,6 +26,7 @@ struct SessionListView: View {
             || session.overview.localizedCaseInsensitiveContains(store.searchText)
             || (session.project?.localizedCaseInsensitiveContains(store.searchText) ?? false)
             || (session.lineage?.displayName.localizedCaseInsensitiveContains(store.searchText) ?? false)
+            || store.bodySearchPreviews[session.id] != nil
         if matches { return node }
         let matchingChildren = node.children.compactMap(filtering)
         guard !matchingChildren.isEmpty else { return nil }
@@ -69,9 +70,13 @@ struct SessionListView: View {
             }
         }
         .navigationTitle(store.selectedTool?.displayName ?? "セッション")
-        .searchable(text: $store.searchText, prompt: "タイトル・プロジェクトを検索")
+        .searchable(text: $store.searchText, prompt: "タイトル・プロジェクト・本文を検索")
+        .onChange(of: store.searchText) { _, _ in
+            store.scheduleBodySearch()
+        }
         .onChange(of: store.selectedTool) { _, _ in
             collapsedProjects.removeAll()
+            store.scheduleBodySearch()
         }
         .onChange(of: sessions.map(\.id)) { _, _ in
             // 検索で見えなくなった項目を一括削除へ混ぜない。
@@ -100,7 +105,7 @@ struct SessionListView: View {
 
     private func outline(_ roots: [SessionTreeNode]) -> some View {
         OutlineGroup(roots, children: \.outlineChildren) { node in
-            SessionRow(node: node)
+            SessionRow(node: node, bodyPreview: store.bodySearchPreviews[node.session.id])
                 .tag(node.session.id)
                 .contextMenu {
                     let candidates = store.trashCandidates(for: node.session)
@@ -172,6 +177,7 @@ private struct DetectionEmptyView: View {
 
 private struct SessionRow: View {
     let node: SessionTreeNode
+    var bodyPreview: String?
 
     private var session: SessionSummary { node.session }
 
@@ -193,6 +199,12 @@ private struct SessionRow: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
+            if let bodyPreview {
+                Text(bodyPreview)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(2)
+            }
             HStack(spacing: 6) {
                 MetaChip(systemImage: "clock", text: session.date.formatted(.relative(presentation: .named)))
                 MetaChip(systemImage: "doc", text: session.byteCount.formatted(.byteCount(style: .file)))
