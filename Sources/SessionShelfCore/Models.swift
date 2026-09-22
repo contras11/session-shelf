@@ -341,6 +341,27 @@ public struct SessionSummary: Identifiable, Hashable, Sendable {
         self.protectionReason = protectionReason
         self.deletionMode = deletionMode ?? (tool == .openCode ? .openCodeCLI(sessionID: id.replacingOccurrences(of: "opencode:", with: "")) : .moveToTrash)
     }
+
+    func protecting(_ reason: String) -> SessionSummary {
+        SessionSummary(
+            id: id,
+            tool: tool,
+            kind: kind,
+            title: title,
+            date: date,
+            byteCount: byteCount,
+            project: project,
+            overview: overview,
+            sourceURL: sourceURL,
+            deletionURL: deletionURL,
+            relatedURLs: relatedURLs,
+            lineage: lineage,
+            isSupported: isSupported,
+            isProtected: true,
+            protectionReason: reason,
+            deletionMode: deletionMode
+        )
+    }
 }
 
 public enum Speaker: String, Sendable {

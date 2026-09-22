@@ -7,12 +7,16 @@ public struct SessionRepository: @unchecked Sendable {
     private let fileManager: FileManager
     private let openCodeExecutables: [URL]
     private let openCodeDeletionTimeout: TimeInterval
+    private let isProcessAlive: @Sendable (Int32) -> Bool
+    private let processStartedAt: @Sendable (Int32) -> Date?
 
     public init(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         openCodeExecutables: [URL]? = nil,
         executableSearchPath: String? = ProcessInfo.processInfo.environment["PATH"],
-        openCodeDeletionTimeout: TimeInterval = 15
+        openCodeDeletionTimeout: TimeInterval = 15,
+        isProcessAlive: (@Sendable (Int32) -> Bool)? = nil,
+        processStartedAt: (@Sendable (Int32) -> Date?)? = nil
     ) {
         self.homeDirectory = homeDirectory.standardizedFileURL
         self.fileManager = .default
@@ -21,6 +25,8 @@ public struct SessionRepository: @unchecked Sendable {
             searchPath: executableSearchPath
         )
         self.openCodeDeletionTimeout = openCodeDeletionTimeout
+        self.isProcessAlive = isProcessAlive ?? LiveSessions.isAlive
+        self.processStartedAt = processStartedAt ?? LiveSessions.startedAt
     }
 
     public func scanAll() -> [ToolShelf] {
@@ -184,7 +190,12 @@ public struct SessionRepository: @unchecked Sendable {
             home: homeDirectory,
             fileManager: fileManager,
             modifiedDate: modifiedDate,
-            isRecentlyModified: isRecentlyModified
+            isRecentlyModified: isRecentlyModified,
+            liveProjects: LiveSessions.ompProjectPaths(
+                home: homeDirectory,
+                fileManager: fileManager,
+                isAlive: isProcessAlive
+            )
         ))
     }
 
@@ -208,11 +219,21 @@ public struct SessionRepository: @unchecked Sendable {
             homeDirectory.appendingPathComponent(".claude/projects"),
             homeDirectory.appendingPathComponent(".claude/sessions")
         ]
+        let liveStems = LiveSessions.claudeSessionStems(
+            home: homeDirectory,
+            fileManager: fileManager,
+            isAlive: isProcessAlive,
+            startedAt: processStartedAt
+        )
         var sessions: [SessionSummary] = []
         for root in roots where exists(root) {
             for url in files(under: root, extensions: ["jsonl"])
             where !url.path.contains("/subagents/") {
-                sessions.append(makeJSONSummary(at: url, tool: .claudeCode, activeProtection: true))
+                var summary = makeJSONSummary(at: url, tool: .claudeCode, activeProtection: true)
+                if liveStems.contains(url.deletingPathExtension().lastPathComponent.lowercased()) {
+                    summary = summary.protecting(LiveSessions.reason)
+                }
+                sessions.append(summary)
             }
         }
         return shelf(.claudeCode, sessions: sessions)

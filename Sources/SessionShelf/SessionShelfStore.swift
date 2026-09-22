@@ -107,6 +107,7 @@ final class SessionShelfStore: ObservableObject {
     @Published var errorMessage: String?
     @Published var trashRequest: TrashRequest?
     @Published var searchText = ""
+    @Published private(set) var bodySearchPreviews: [String: String] = [:]
     @Published var selectedDetailTab = "会話"
     @Published var storageReport = StorageScanReport(items: [])
     @Published var isScanningStorage = false
@@ -129,6 +130,7 @@ final class SessionShelfStore: ObservableObject {
     private var storageScanGeneration = UUID()
     private var storageScanTask: Task<Void, Never>?
     private var detailGeneration = UUID()
+    private var bodySearchGeneration = UUID()
     private var selectionState = SessionSelectionState()
     private var storageSelectionState = SessionSelectionState()
 
@@ -238,6 +240,27 @@ final class SessionShelfStore: ObservableObject {
                 selectedDestination = visibleTools.first.map(SidebarDestination.tool) ?? .storage(.all)
             }
             reconcileSelection(visibleSessions: selectedShelf?.sessions ?? [])
+            scheduleBodySearch()
+        }
+    }
+
+    func scheduleBodySearch() {
+        let generation = UUID()
+        bodySearchGeneration = generation
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sessions = selectedShelf?.sessions ?? []
+        guard !query.isEmpty else {
+            bodySearchPreviews = [:]
+            return
+        }
+        Task {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            guard bodySearchGeneration == generation else { return }
+            let previews = await Task.detached(priority: .userInitiated) {
+                SessionBodySearch.previews(for: sessions, query: query)
+            }.value
+            guard bodySearchGeneration == generation else { return }
+            bodySearchPreviews = previews
         }
     }
 
