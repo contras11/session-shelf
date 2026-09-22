@@ -76,15 +76,11 @@ public enum OpenCodeRepository {
     }
 
     private static func splitControlText(_ text: String) -> (String, [(name: String, args: String)]) {
-        let pattern = #"(?s)(\d{2})❺([A-Za-z0-9_-]+)\s+noneauta(.*?)(?=\d{2}❺|<\|eos\|>|$)"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return (text.replacingOccurrences(of: "<|eos|>", with: ""), []) }
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        let matches = regex.matches(in: text, range: range)
-        guard let first = matches.first, let firstRange = Range(first.range, in: text) else { return (text.replacingOccurrences(of: "<|eos|>", with: ""), []) }
-        let prefix = String(text[..<firstRange.lowerBound])
-        let controls = matches.compactMap { match -> (String, String)? in
-            guard let nameRange = Range(match.range(at: 2), in: text), let argRange = Range(match.range(at: 3), in: text) else { return nil }
-            return (String(text[nameRange]), String(text[argRange]).trimmingCharacters(in: .whitespacesAndNewlines))
+        let matches = text.matches(of: #/(?s)(\d{2})❺([A-Za-z0-9_-]+)\s+noneauta(.*?)(?=\d{2}❺|<\|eos\|>|$)/#)
+        guard let first = matches.first else { return (text.replacingOccurrences(of: "<|eos|>", with: ""), []) }
+        let prefix = String(text[..<first.range.lowerBound])
+        let controls = matches.map { match in
+            (String(match.output.2), String(match.output.3).trimmingCharacters(in: .whitespacesAndNewlines))
         }
         var normalized = controls
         if text.contains("❺grep") && !normalized.contains(where: { $0.0 == "grep" }) { normalized.append(("grep", "")) }

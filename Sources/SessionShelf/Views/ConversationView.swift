@@ -4,7 +4,7 @@ import SwiftUI
 
 struct ConversationView: View {
     let entries: [ConversationEntry]
-    @StateObject private var viewState = ConversationViewState()
+    @State private var showsInternalContext = false
 
     private var hasInternalContext: Bool {
         entries.contains { entry in
@@ -22,7 +22,7 @@ struct ConversationView: View {
     private var displayItems: [ConversationDisplayItem] {
         ConversationDisplayItem.group(
             entries,
-            showsInternalContext: viewState.showsInternalContext
+            showsInternalContext: showsInternalContext
         )
     }
 
@@ -34,7 +34,7 @@ struct ConversationView: View {
                 if hasInternalContext {
                     HStack {
                         Spacer()
-                        Toggle(isOn: $viewState.showsInternalContext) {
+                        Toggle(isOn: $showsInternalContext) {
                             Label("内部情報 \(internalContextCount)件", systemImage: "gearshape")
                         }
                         .toggleStyle(.button)
@@ -139,12 +139,11 @@ private struct MessageBubble: View {
                             .foregroundStyle(.tertiary)
                     }
                 }
-                ForEach(Array(MessageBlockParser.parse(entry.text).enumerated()), id: \.offset) { _, block in
-                    switch block {
-                    case .prose(let text):
-                        MarkdownContentView(text: text, compact: true)
-                    case .code(let language, let text):
+                ForEach(Array(MarkdownDocumentParser.parse(entry.text).enumerated()), id: \.offset) { _, block in
+                    if case .code(let language, let text) = block {
                         CollapsibleCodeBlock(language: language, text: text)
+                    } else {
+                        MarkdownBlockView(block: block, compact: true)
                     }
                 }
             }
@@ -179,10 +178,10 @@ private struct MessageBubble: View {
 private struct OperationGroup: View {
     let id: UUID
     let entries: [ConversationEntry]
-    @StateObject private var disclosureState = DisclosureState()
+    @State private var isExpanded = false
 
     var body: some View {
-        DisclosureGroup(isExpanded: $disclosureState.isExpanded) {
+        DisclosureGroup(isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
                     if index > 0 { Divider().padding(.vertical, 8) }
@@ -197,7 +196,7 @@ private struct OperationGroup: View {
         .padding(12)
         .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .accessibilityLabel("操作 \(entries.count)件")
-        .accessibilityValue(disclosureState.isExpanded ? "展開中" : "折りたたみ中")
+        .accessibilityValue(isExpanded ? "展開中" : "折りたたみ中")
     }
 }
 
@@ -251,10 +250,10 @@ private struct OperationDetail: View {
 
 private struct ThinkingBlock: View {
     let entry: ConversationEntry
-    @StateObject private var disclosureState = DisclosureState()
+    @State private var isExpanded = false
 
     var body: some View {
-        DisclosureGroup(isExpanded: $disclosureState.isExpanded) {
+        DisclosureGroup(isExpanded: $isExpanded) {
             MarkdownContentView(text: entry.text, compact: true)
                 .padding(.top, 8)
         } label: {
@@ -271,17 +270,17 @@ private struct ThinkingBlock: View {
         .padding(12)
         .background(Color.purple.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .accessibilityLabel("思考")
-        .accessibilityValue(disclosureState.isExpanded ? "展開中" : "折りたたみ中")
+        .accessibilityValue(isExpanded ? "展開中" : "折りたたみ中")
     }
 }
 
 private struct ContextBlock: View {
     let label: String
     let entry: ConversationEntry
-    @StateObject private var disclosureState = DisclosureState()
+    @State private var isExpanded = false
 
     var body: some View {
-        DisclosureGroup(isExpanded: $disclosureState.isExpanded) {
+        DisclosureGroup(isExpanded: $isExpanded) {
             Text(entry.text)
                 .font(.system(.caption, design: .monospaced))
                 .textSelection(.enabled)
@@ -294,14 +293,14 @@ private struct ContextBlock: View {
         .padding(12)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .accessibilityLabel(label)
-        .accessibilityValue(disclosureState.isExpanded ? "展開中" : "折りたたみ中")
+        .accessibilityValue(isExpanded ? "展開中" : "折りたたみ中")
     }
 }
 
 struct CollapsibleCodeBlock: View {
     let language: String?
     let text: String
-    @StateObject private var disclosureState = DisclosureState()
+    @State private var isExpanded = false
 
     private var title: String {
         guard let language, !language.isEmpty else { return "コード" }
@@ -310,7 +309,7 @@ struct CollapsibleCodeBlock: View {
     }
 
     var body: some View {
-        DisclosureGroup(title, isExpanded: $disclosureState.isExpanded) {
+        DisclosureGroup(title, isExpanded: $isExpanded) {
             Text(text.isEmpty ? "（空のブロック）" : text)
                 .font(.system(.callout, design: .monospaced))
                 .textSelection(.enabled)
@@ -320,14 +319,6 @@ struct CollapsibleCodeBlock: View {
         .font(.subheadline.weight(.medium))
         .padding(10)
         .background(Color(nsColor: .textBackgroundColor).opacity(0.7), in: RoundedRectangle(cornerRadius: 8))
-        .accessibilityValue(disclosureState.isExpanded ? "展開中" : "折りたたみ中")
+        .accessibilityValue(isExpanded ? "展開中" : "折りたたみ中")
     }
-}
-
-private final class ConversationViewState: ObservableObject {
-    @Published var showsInternalContext = false
-}
-
-private final class DisclosureState: ObservableObject {
-    @Published var isExpanded = false
 }

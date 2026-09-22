@@ -1,6 +1,4 @@
-import AppKit
 import Foundation
-import CSQLite3
 
 public struct SessionRepository: @unchecked Sendable {
     public let homeDirectory: URL
@@ -436,13 +434,9 @@ public struct SessionRepository: @unchecked Sendable {
 
     private func codexThreadID(from url: URL) -> String? {
         let name = url.deletingPathExtension().lastPathComponent
-        guard let regex = try? NSRegularExpression(
-            pattern: "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-        ) else { return nil }
-        let range = NSRange(name.startIndex..., in: name)
-        guard let match = regex.matches(in: name, range: range).last,
-              let matchRange = Range(match.range, in: name) else { return nil }
-        return String(name[matchRange])
+        return name.matches(of: /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/)
+            .last
+            .map { String($0.output) }
     }
 
     private func shelf(_ tool: AITool, sessions: [SessionSummary]) -> ToolShelf {

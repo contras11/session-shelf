@@ -5,10 +5,6 @@ struct OMPSessionFile: Hashable {
     let stem: String
     let encodedProject: String
 
-    private static let namePattern = try? NSRegularExpression(
-        pattern: #"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.jsonl$"#
-    )
-
     init?(url: URL, sessionsRoot: URL, fileManager: FileManager) {
         let file = url.standardizedFileURL
         let projectDirectory = file.deletingLastPathComponent()
@@ -16,8 +12,7 @@ struct OMPSessionFile: Hashable {
               projectDirectory.standardizedFileURL.path != sessionsRoot.standardizedFileURL.path else { return nil }
         let name = file.lastPathComponent
         guard file.pathExtension.lowercased() == "jsonl", !name.hasPrefix(".") else { return nil }
-        guard let regex = Self.namePattern,
-              regex.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)) != nil else { return nil }
+        guard name.wholeMatch(of: #/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.jsonl$/#) != nil else { return nil }
         if (try? fileManager.attributesOfItem(atPath: file.path)[.type] as? FileAttributeType) == .typeSymbolicLink {
             return nil
         }

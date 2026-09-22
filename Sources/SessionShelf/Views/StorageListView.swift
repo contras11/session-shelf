@@ -37,12 +37,12 @@ struct StorageListView: View {
             HStack(spacing: 8) {
                 SummaryCard(
                     title: "確認済み容量",
-                    value: store.selectedStorageTotalByteCount.formatted(.byteCount(style: .file)),
+                    value: store.storageTotalByteCount(for: store.storageToolFilter).formatted(.byteCount(style: .file)),
                     systemImage: "internaldrive"
                 )
                 SummaryCard(
                     title: "整理できる候補",
-                    value: store.selectedStorageDeletableByteCount.formatted(.byteCount(style: .file)),
+                    value: store.storageDeletableByteCount(for: store.storageToolFilter).formatted(.byteCount(style: .file)),
                     systemImage: "trash.slash"
                 )
             }

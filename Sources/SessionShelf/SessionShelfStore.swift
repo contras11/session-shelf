@@ -188,20 +188,6 @@ final class SessionShelfStore: ObservableObject {
         }
     }
 
-    var storageItemsForSelectedTool: [StorageItem] {
-        storageItems(for: storageToolFilter)
-    }
-
-    var selectedStorageTotalByteCount: Int64 {
-        storageItemsForSelectedTool.reduce(0) { $0 + $1.byteCount }
-    }
-
-    var selectedStorageDeletableByteCount: Int64 {
-        storageItemsForSelectedTool
-            .filter { $0.safety != .protected }
-            .reduce(0) { $0 + $1.byteCount }
-    }
-
     func storageItems(for filter: StorageToolFilter) -> [StorageItem] {
         storageReport.items.filter { visibleTools.contains($0.tool) && filter.includes($0) }
     }
@@ -287,14 +273,6 @@ final class SessionShelfStore: ObservableObject {
             reconcileStorageSelection(visibleItems: visibleStorageItems)
             storageScanTask = nil
         }
-    }
-
-    func select(_ session: SessionSummary?) {
-        guard let session else {
-            clearSelection()
-            return
-        }
-        updateSelection([session.id], visibleSessions: selectedShelf?.sessions ?? [session])
     }
 
     func updateSelection(_ ids: Set<String>, visibleSessions: [SessionSummary]) {

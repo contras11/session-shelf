@@ -2,18 +2,18 @@ import SwiftUI
 
 struct RawLogView: View {
     let text: String
-    @StateObject private var displayState = RawLogDisplayState()
+    @State private var wrapsLines = true
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Spacer()
-                Toggle(isOn: $displayState.wrapsLines) {
+                Toggle(isOn: $wrapsLines) {
                     Label("折り返す", systemImage: "text.justify.left")
                 }
                 .toggleStyle(.button)
                 .controlSize(.small)
-                .help(displayState.wrapsLines ? "右端で折り返しています" : "横スクロールで表示しています")
+                .help(wrapsLines ? "右端で折り返しています" : "横スクロールで表示しています")
                 .accessibilityIdentifier("rawLog.wrapLines")
             }
             .padding(.horizontal, 12)
@@ -22,7 +22,7 @@ struct RawLogView: View {
 
             Divider()
 
-            if displayState.wrapsLines {
+            if wrapsLines {
                 ScrollView(.vertical) {
                     rawText
                         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -44,8 +44,4 @@ struct RawLogView: View {
             .textSelection(.enabled)
             .padding(16)
     }
-}
-
-private final class RawLogDisplayState: ObservableObject {
-    @Published var wrapsLines = true
 }

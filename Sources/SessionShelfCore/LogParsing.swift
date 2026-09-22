@@ -152,17 +152,16 @@ enum LogParsing {
                     into: &result
                 )
             } else if payloadType == "function_call" || payloadType == "custom_tool_call" {
-                let name = payload["name"] as? String ?? payload["tool_name"] as? String ?? "ツール"
-                let input = payload["arguments"] ?? payload["input"]
-                let arguments = text(from: input)
-                addToolCall(name: name, detail: arguments, timestamp: timestamp, into: &result)
-                addOperation(name: name, detail: arguments, result: .unknown, timestamp: timestamp, into: &result)
-                if isEditTool(name) { collectPaths(in: input as Any, into: &result.changedFiles) }
+                recordToolUse(
+                    name: payload["name"] as? String ?? payload["tool_name"] as? String ?? "ツール",
+                    input: payload["arguments"] ?? payload["input"],
+                    timestamp: timestamp,
+                    into: &result
+                )
             } else if payloadType == "function_call_output" || payloadType == "custom_tool_call_output" {
                 let output = text(from: payload["output"])
                 let operationResult: OperationResult = output.lowercased().contains("error") ? .failure : .success
-                addToolResult(output, result: operationResult, timestamp: timestamp, into: &result)
-                result.operations.append(OperationEntry(category: .other, summary: "ツールの実行結果", result: operationResult, timestamp: timestamp))
+                recordToolResult(output, result: operationResult, timestamp: timestamp, into: &result)
             }
         } else if type == "event_msg" {
             let eventType = payload["type"] as? String
@@ -193,26 +192,10 @@ enum LogParsing {
                 } else if blockType == "thinking" {
                     addThinking(block["thinking"] as? String ?? "", timestamp: timestamp, into: &result)
                 } else if blockType == "tool_use" {
-                    let name = block["name"] as? String ?? "ツール"
-                    let detail = text(from: block["input"])
-                    addToolCall(name: name, detail: detail, timestamp: timestamp, into: &result)
-                    addOperation(
-                        name: name,
-                        detail: detail,
-                        result: .unknown,
-                        timestamp: timestamp,
-                        into: &result
-                    )
-                    if isEditTool(name) { collectPaths(in: block["input"] as Any, into: &result.changedFiles) }
+                    recordToolUse(name: block["name"] as? String ?? "ツール", input: block["input"], timestamp: timestamp, into: &result)
                 } else if blockType == "tool_result" {
                     let failed = block["is_error"] as? Bool ?? false
-                    addToolResult(
-                        text(from: block["content"]),
-                        result: failed ? .failure : .success,
-                        timestamp: timestamp,
-                        into: &result
-                    )
-                    result.operations.append(OperationEntry(category: .other, summary: "ツールの実行結果", result: failed ? .failure : .success, timestamp: timestamp))
+                    recordToolResult(text(from: block["content"]), result: failed ? .failure : .success, timestamp: timestamp, into: &result)
                 }
             }
         } else {
@@ -250,26 +233,22 @@ enum LogParsing {
             if let calls = object["tool_calls"] as? [Any] {
                 for call in calls {
                     let dictionary = call as? [String: Any] ?? [:]
-                    let name = dictionary["name"] as? String ?? dictionary["tool_name"] as? String ?? "ツール"
-                    let detail = text(from: dictionary["arguments"] ?? dictionary["input"])
-                    addToolCall(name: name, detail: detail, timestamp: timestamp, into: &result)
-                    addOperation(
-                        name: name,
-                        detail: detail,
-                        result: .unknown,
+                    recordToolUse(
+                        name: dictionary["name"] as? String ?? dictionary["tool_name"] as? String ?? "ツール",
+                        input: dictionary["arguments"] ?? dictionary["input"],
                         timestamp: timestamp,
                         into: &result
                     )
-                    if isEditTool(name) {
-                        collectPaths(in: dictionary["arguments"] ?? dictionary["input"] as Any, into: &result.changedFiles)
-                    }
                 }
             }
         } else if type.contains("tool") {
             let failed = (object["status"] as? String)?.lowercased() == "failed" || object["error"] != nil
-            let output = text(from: object["content"] ?? object["output"] ?? object["error"])
-            addToolResult(output, result: failed ? .failure : .success, timestamp: timestamp, into: &result)
-            result.operations.append(OperationEntry(category: .other, summary: "ツールの実行結果", result: failed ? .failure : .success, timestamp: timestamp))
+            recordToolResult(
+                text(from: object["content"] ?? object["output"] ?? object["error"]),
+                result: failed ? .failure : .success,
+                timestamp: timestamp,
+                into: &result
+            )
         }
     }
 
@@ -377,22 +356,20 @@ enum LogParsing {
             case "text", "input_text", "output_text":
                 parseMessageContent(dictionary["text"], speaker: speaker, timestamp: timestamp, into: &result)
             case "tool_use":
-                let name = dictionary["name"] as? String ?? "ツール"
-                let input = dictionary["input"] ?? dictionary["arguments"]
-                let detail = text(from: input)
-                addToolCall(name: name, detail: detail, timestamp: timestamp, into: &result)
-                addOperation(name: name, detail: detail, result: .unknown, timestamp: timestamp, into: &result)
-                if isEditTool(name) { collectPaths(in: input as Any, into: &result.changedFiles) }
+                recordToolUse(
+                    name: dictionary["name"] as? String ?? "ツール",
+                    input: dictionary["input"] ?? dictionary["arguments"],
+                    timestamp: timestamp,
+                    into: &result
+                )
             case "tool_result":
                 let failed = dictionary["is_error"] as? Bool ?? false
-                let output = text(from: dictionary["content"] ?? dictionary["output"])
-                addToolResult(output, result: failed ? .failure : .success, timestamp: timestamp, into: &result)
-                result.operations.append(OperationEntry(
-                    category: .other,
-                    summary: "ツールの実行結果",
+                recordToolResult(
+                    text(from: dictionary["content"] ?? dictionary["output"]),
                     result: failed ? .failure : .success,
-                    timestamp: timestamp
-                ))
+                    timestamp: timestamp,
+                    into: &result
+                )
             case "input_image", "image":
                 addContext("添付画像", label: "添付画像", timestamp: timestamp, into: &result)
             default:
@@ -572,22 +549,45 @@ enum LogParsing {
     }
 
     private static func embeddedTimestamp(in text: String) -> Date? {
-        guard let value = content(ofTag: "timestamp", in: text) else { return nil }
-        let pattern = #"\s*\(UTC([+-]\d{1,2})\)\s*$"#
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)),
-              let fullRange = Range(match.range(at: 0), in: value),
-              let offsetRange = Range(match.range(at: 1), in: value),
-              let offsetHours = Int(value[offsetRange])
+        guard let value = content(ofTag: "timestamp", in: text),
+              let match = value.firstMatch(of: /\s*\(UTC([+-]\d{1,2})\)\s*$/),
+              let offsetHours = Int(match.output.1)
         else { return nil }
 
-        let dateText = String(value[..<fullRange.lowerBound])
+        let dateText = String(value[..<match.range.lowerBound])
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.timeZone = TimeZone(secondsFromGMT: offsetHours * 3_600)
         formatter.dateFormat = "EEEE, MMM d, yyyy, h:mm a"
         return formatter.date(from: dateText)
+    }
+
+    private static func recordToolUse(
+        name: String,
+        input: Any?,
+        timestamp: Date?,
+        into result: inout ParsedLog
+    ) {
+        let detail = text(from: input)
+        addToolCall(name: name, detail: detail, timestamp: timestamp, into: &result)
+        addOperation(name: name, detail: detail, result: .unknown, timestamp: timestamp, into: &result)
+        if isEditTool(name) { collectPaths(in: input as Any, into: &result.changedFiles) }
+    }
+
+    private static func recordToolResult(
+        _ output: String,
+        result operationResult: OperationResult,
+        timestamp: Date?,
+        into result: inout ParsedLog
+    ) {
+        addToolResult(output, result: operationResult, timestamp: timestamp, into: &result)
+        result.operations.append(OperationEntry(
+            category: .other,
+            summary: "ツールの実行結果",
+            result: operationResult,
+            timestamp: timestamp
+        ))
     }
 
     static func addToolCall(

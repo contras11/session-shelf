@@ -28,7 +28,6 @@ struct SessionShelfChecks {
         try checkDeletionRevalidatesModificationDate(); completed += 1
         try checkOpenCodeCLITimeoutAndStderr(); completed += 1
         try checkGrokChangedFiles(); completed += 1
-        try checkMessageBlocks(); completed += 1
         try checkMarkdownDocument(); completed += 1
         try checkMultipleSelection(); completed += 1
         try checkStorageClassification(); completed += 1
@@ -882,31 +881,6 @@ struct SessionShelfChecks {
         }
     }
 
-    private static func checkMessageBlocks() throws {
-        let blocks = MessageBlockParser.parse("""
-        説明です。
-        ```bash
-        swift test
-        ```
-        続きです。
-        ```swift
-        let value = 1
-        ```
-        """)
-        try require(blocks == [
-            .prose("説明です。"),
-            .code(language: "bash", text: "swift test"),
-            .prose("続きです。"),
-            .code(language: "swift", text: "let value = 1")
-        ], "コードフェンスの分割に失敗")
-
-        let unfinished = MessageBlockParser.parse("前文\n~~~zsh\necho hello")
-        try require(
-            unfinished == [.prose("前文"), .code(language: "zsh", text: "echo hello")],
-            "閉じられていないコードフェンスを保持できない"
-        )
-    }
-
     private static func checkMarkdownDocument() throws {
         let blocks = MarkdownDocumentParser.parse("""
         # 見出し
@@ -942,6 +916,11 @@ struct SessionShelfChecks {
         try require(blocks.contains(.quote("引用です")), "Markdown引用を解析できない")
         try require(blocks.contains(.table(headers: ["観点", "結果"], rows: [["表示", "成功"]])), "Markdown表を解析できない")
         try require(blocks.contains(.code(language: "swift", text: "let value = 1")), "Markdownコードを解析できない")
+        let unfinished = MarkdownDocumentParser.parse("前文\n~~~zsh\necho hello")
+        try require(
+            unfinished == [.paragraph("前文"), .code(language: "zsh", text: "echo hello")],
+            "閉じられていないコードフェンスを保持できない"
+        )
     }
 
     private static func checkMultipleSelection() throws {
