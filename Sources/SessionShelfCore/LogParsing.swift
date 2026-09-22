@@ -44,6 +44,8 @@ enum LogParsing {
                 break
             case .openCode:
                 break
+            case .omp:
+                OMPRecordParser.parse(object, into: &result)
             }
         }
         if lines.count > LogLimits.maximumEntries {
@@ -188,6 +190,8 @@ enum LogParsing {
                 let blockType = block["type"] as? String
                 if blockType == "text" {
                     addConversation(block["text"] as? String ?? "", speaker: role, timestamp: timestamp, into: &result)
+                } else if blockType == "thinking" {
+                    addThinking(block["thinking"] as? String ?? "", timestamp: timestamp, into: &result)
                 } else if blockType == "tool_use" {
                     let name = block["name"] as? String ?? "ツール"
                     let detail = text(from: block["input"])
@@ -296,7 +300,7 @@ enum LogParsing {
                 }
                 seenMessageTimes[signature] = timestamp
                 return true
-            case .toolCall, .toolResult:
+            case .toolCall, .toolResult, .thinking:
                 return true
             }
         }
@@ -310,7 +314,7 @@ enum LogParsing {
         }
     }
 
-    private static func addConversation(
+    static func addConversation(
         _ raw: String,
         speaker: Speaker,
         timestamp: Date?,
@@ -319,6 +323,12 @@ enum LogParsing {
         let clean = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return }
         result.conversation.append(ConversationEntry(speaker: speaker, text: clean, timestamp: timestamp))
+    }
+
+    static func addThinking(_ raw: String, timestamp: Date?, into result: inout ParsedLog) {
+        let clean = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        result.conversation.append(ConversationEntry(speaker: .assistant, text: clean, timestamp: timestamp, kind: .thinking))
     }
 
     private static func parseMessageContent(
@@ -398,7 +408,7 @@ enum LogParsing {
         let timestamp: Date?
     }
 
-    private static func addNormalizedText(
+    static func addNormalizedText(
         _ raw: String,
         speaker: Speaker,
         timestamp: Date?,
@@ -511,7 +521,7 @@ enum LogParsing {
         return fallback
     }
 
-    private static func addContext(
+    static func addContext(
         _ raw: String,
         label: String,
         timestamp: Date?,
@@ -580,7 +590,7 @@ enum LogParsing {
         return formatter.date(from: dateText)
     }
 
-    private static func addToolCall(
+    static func addToolCall(
         name: String,
         detail: String,
         timestamp: Date?,
@@ -595,7 +605,7 @@ enum LogParsing {
         ))
     }
 
-    private static func addToolResult(
+    static func addToolResult(
         _ output: String,
         result operationResult: OperationResult,
         timestamp: Date?,
@@ -610,7 +620,7 @@ enum LogParsing {
         ))
     }
 
-    private static func addOperation(
+    static func addOperation(
         name: String,
         detail: String,
         result operationResult: OperationResult,
@@ -635,12 +645,12 @@ enum LogParsing {
         result.operations.append(OperationEntry(category: category, summary: summary, result: operationResult, timestamp: timestamp))
     }
 
-    private static func isEditTool(_ name: String) -> Bool {
+    static func isEditTool(_ name: String) -> Bool {
         let lower = name.lowercased()
         return lower.contains("edit") || lower.contains("write") || lower.contains("patch") || lower.contains("delete")
     }
 
-    private static func collectPaths(in value: Any, into paths: inout Set<ChangedFile>) {
+    static func collectPaths(in value: Any, into paths: inout Set<ChangedFile>) {
         if let dictionary = value as? [String: Any] {
             for (key, item) in dictionary {
                 let normalized = key.lowercased()
@@ -670,7 +680,7 @@ enum LogParsing {
         }
     }
 
-    private static func text(from value: Any?) -> String {
+    static func text(from value: Any?) -> String {
         guard let value else { return "" }
         if let string = value as? String { return string }
         if let number = value as? NSNumber { return number.stringValue }
@@ -694,7 +704,7 @@ enum LogParsing {
         return ""
     }
 
-    private static func date(_ value: Any?) -> Date? {
+    static func date(_ value: Any?) -> Date? {
         if let seconds = value as? TimeInterval {
             return Date(timeIntervalSince1970: seconds > 10_000_000_000 ? seconds / 1_000 : seconds)
         }
@@ -702,7 +712,9 @@ enum LogParsing {
         if let numeric = Double(string) {
             return Date(timeIntervalSince1970: numeric > 10_000_000_000 ? numeric / 1_000 : numeric)
         }
-        return ISO8601DateFormatter().date(from: string)
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: string) ?? ISO8601DateFormatter().date(from: string)
     }
 
     static func excerpt(_ text: String, maximum: Int = 180) -> String {

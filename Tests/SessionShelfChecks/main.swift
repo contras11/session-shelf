@@ -39,7 +39,146 @@ struct SessionShelfChecks {
         try checkOpenCodeDeletionBoundaries(); completed += 1
         try checkOpenCodePATHDiscovery(); completed += 1
         try checkOpenCodeStorageBoundaries(); completed += 1
+        try checkOMP(); completed += 1
+        try checkOMPStorageClassification(); completed += 1
         print("Session Shelf: \(completed)件の検証に成功")
+    }
+
+    private static func checkOMP() throws {
+        try withTemporaryHome { home in
+            let oldDate = Date(timeIntervalSinceNow: -3_600)
+            let stem = "2026-09-17T06-38-28-000Z_11111111-1111-4111-8111-111111111111"
+            let projectDirectory = home.appendingPathComponent(".omp/agent/sessions/--private-tmp--", isDirectory: true)
+            let jsonl = projectDirectory.appendingPathComponent("\(stem).jsonl")
+            let logs = projectDirectory.appendingPathComponent(stem, isDirectory: true)
+            let lock = projectDirectory.appendingPathComponent(".\(stem).jsonl.lock.os")
+            try writeJSONLines([
+                ["type": "session", "id": "s1", "cwd": "/somewhere/else", "timestamp": "2026-09-17T06:38:28.000Z"],
+                ["type": "title", "title": "最初の題名", "pad": String(repeating: " ", count: 40)],
+                ["type": "message", "id": "m1", "parentId": NSNull(), "timestamp": "2026-09-17T06:38:29.123Z", "message": [
+                    "role": "user", "content": [["type": "text", "text": "ompで実装してください"]]
+                ]],
+                ["type": "message", "id": "m2", "parentId": "m1", "timestamp": "2026-09-17T06:38:30.456Z", "message": [
+                    "role": "assistant", "content": [
+                        ["type": "thinking", "thinking": "手順を考える"],
+                        ["type": "text", "text": "確認します"],
+                        ["type": "toolCall", "id": "t1", "name": "write", "arguments": ["path": "/private/tmp/App.swift", "content": "x"]]
+                    ]
+                ]],
+                ["type": "message", "id": "m3", "parentId": "m2", "timestamp": "2026-09-17T06:38:31.000Z", "message": [
+                    "role": "toolResult", "toolCallId": "t1", "toolName": "write", "isError": false,
+                    "content": [["type": "text", "text": "書きました"]]
+                ]],
+                ["type": "message", "id": "m4", "parentId": "m3", "message": [
+                    "role": "developer", "content": [["type": "text", "text": "内部の開発者指示"]]
+                ]],
+                ["type": "title_change", "title": "変更後の題名"],
+                ["type": "model_change", "modelId": "fixture"]
+            ], to: jsonl)
+            try write("bash log", to: logs.appendingPathComponent("bash-1.log"))
+            try write("lock", to: lock)
+            for url in [jsonl, logs.appendingPathComponent("bash-1.log"), lock] {
+                try setTreeModificationDate(oldDate, from: url, through: home)
+            }
+
+            let repository = SessionRepository(homeDirectory: home)
+            let shelf = repository.scan(.omp)
+            try require(shelf.sessions.count == 1, "ompのlockファイルまたは兄弟ディレクトリをセッションとして数えた: \(shelf.sessions.count)")
+            let item = shelf.sessions[0]
+            try require(item.title == "変更後の題名", "ompのtitle_changeを反映できない: \(item.title)")
+            try require(item.project == "/private/tmp", "ompのプロジェクトをディレクトリ名から復号できない: \(item.project ?? "nil")")
+            try require(item.relatedURLs.count == 1 && item.relatedURLs[0].lastPathComponent == stem, "ompの兄弟ディレクトリを関連付けられない")
+            try require(item.lineage == nil, "ompのparentIdを親セッションと誤認した")
+            try require(item.deletionMode == .moveToTrash, "ompがOpenCode削除経路へ乗った")
+            try require(!item.isProtected, "古いompセッションが保護された")
+            let jsonlSize = Int64((try? jsonl.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? -1)
+            try require(item.byteCount == jsonlSize, "ompの容量がjsonl単体ではない")
+
+            let detail = try repository.loadDetail(for: item)
+            try require(
+                detail.conversation.map(\.kind) == [
+                    .message,
+                    .thinking,
+                    .message,
+                    .toolCall(name: "write"),
+                    .toolResult(result: .success),
+                    .context(label: "開発者指示")
+                ],
+                "ompの会話順序が不正: \(detail.conversation.map(\.kind))"
+            )
+            try require(detail.conversation[1].speaker == .assistant && detail.conversation[1].text == "手順を考える", "ompの思考ブロックを抽出できない")
+            try require(detail.conversation[0].timestamp != nil, "ompの小数秒付き日時を読めない")
+            try require(detail.changedFiles.map(\.path) == ["/private/tmp/App.swift"], "ompの変更ファイルを抽出できない")
+
+            let plan = repository.deletionPlan(for: [item])
+            try require(plan.items.map(\.kind) == [.sessionLog, .companionDirectory], "ompの削除計画が不正: \(plan.items.map(\.kind))")
+            try require(plan.items[0].location?.lastPathComponent == "\(stem).jsonl" && plan.items[1].isDirectory, "ompの削除計画の対象が不正")
+            try require(plan.exclusions.isEmpty, "保護されていないompが除外された")
+
+            let outsideURL = home.appendingPathComponent(".omp/agent/other/\(stem).jsonl")
+            try write("{}", to: outsideURL)
+            try setTreeModificationDate(oldDate, from: outsideURL, through: home)
+            let outside = SessionSummary(
+                id: "omp:outside", tool: .omp, title: "外", date: oldDate, byteCount: 2, project: nil, overview: "",
+                sourceURL: outsideURL
+            )
+            do {
+                try repository.moveToTrash(outside)
+                throw CheckFailure.failed("sessions root外のompを移動できてしまった")
+            } catch SessionShelfError.outsideAllowedLocation {
+            }
+            let otherStem = projectDirectory.appendingPathComponent("2026-09-17T06-38-28-000Z_22222222-2222-4222-8222-222222222222", isDirectory: true)
+            try write("other", to: otherStem.appendingPathComponent("bash.log"))
+            try setTreeModificationDate(oldDate, from: otherStem.appendingPathComponent("bash.log"), through: home)
+            let mismatched = SessionSummary(
+                id: item.id, tool: .omp, title: item.title, date: item.date, byteCount: item.byteCount, project: item.project,
+                overview: item.overview, sourceURL: item.sourceURL, relatedURLs: [otherStem]
+            )
+            do {
+                try repository.moveToTrash(mismatched)
+                throw CheckFailure.failed("stemが異なる兄弟ディレクトリを移動できてしまった")
+            } catch SessionShelfError.outsideAllowedLocation {
+            }
+            try require(FileManager.default.fileExists(atPath: jsonl.path) && FileManager.default.fileExists(atPath: otherStem.path), "拒否された削除でファイルが消えた")
+
+            try repository.moveToTrash(item)
+            try require(!FileManager.default.fileExists(atPath: jsonl.path), "ompのjsonlが残っている")
+            try require(!FileManager.default.fileExists(atPath: logs.path), "ompの兄弟ディレクトリが残っている")
+            try require(FileManager.default.fileExists(atPath: otherStem.path), "無関係なompディレクトリまで削除された")
+            try require(repository.scan(.omp).sessions.isEmpty, "削除後もompが一覧に残る")
+        }
+    }
+
+    private static func checkOMPStorageClassification() throws {
+        try withTemporaryHome { home in
+            let now = Date(timeIntervalSince1970: 2_000_000_000)
+            let oldDate = now.addingTimeInterval(-10 * 24 * 60 * 60)
+            let root = home.appendingPathComponent(".omp")
+            let files = [
+                "agent/sessions/--private-tmp--/2026-09-17T06-38-28-000Z_11111111-1111-4111-8111-111111111111.jsonl",
+                "agent/cache/index.json",
+                "agent/terminal-sessions/term.json",
+                "agent/mystery/data.bin",
+                "agent.db",
+                "config.yml",
+                "history.db",
+                "logs/omp.log"
+            ]
+            for path in files {
+                let url = root.appendingPathComponent(path)
+                try write("fixture", to: url)
+                try setTreeModificationDate(oldDate, from: url, through: home)
+            }
+            let report = StorageRepository(homeDirectory: home, now: { now }).scanAll()
+            try require(!report.items.contains { $0.location.standardizedFileURL == root.appendingPathComponent("agent").standardizedFileURL }, "omp agentディレクトリを丸ごと候補にした")
+            try require(storageItem(in: report, suffix: "agent/sessions")?.safety == .protected && storageItem(in: report, suffix: "agent/sessions")?.category == .conversation, "omp会話履歴を保護できない")
+            try require(storageItem(in: report, suffix: "agent/cache")?.safety == .regeneratable, "ompキャッシュを再生成可能に分類できない")
+            try require(storageItem(in: report, suffix: "agent/terminal-sessions")?.safety == .reviewRequired, "omp端末記録を要確認に分類できない")
+            try require(storageItem(in: report, suffix: "agent/mystery")?.safety == .protected, "omp未知データを保護できない")
+            for name in ["agent.db", "config.yml", "history.db", ".omp/logs"] {
+                try require(storageItem(in: report, suffix: name)?.safety == .protected, "omp \(name) を保護できない")
+            }
+        }
     }
 
     private static func scanLocalMachine() throws {

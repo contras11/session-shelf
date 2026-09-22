@@ -33,21 +33,22 @@ struct ToolIconView: View {
     }
 
     static func image(for tool: AITool) -> NSImage? {
-        let name = tool.iconAssetName
+        guard let name = tool.iconAssetName else { return nil }
         let url = Bundle.module.url(forResource: name, withExtension: "png", subdirectory: "ToolIcons")
             ?? Bundle.module.url(forResource: name, withExtension: "png")
         return url.flatMap(NSImage.init(contentsOf:))
     }
 }
 
-private extension AITool {
-    var iconAssetName: String {
+extension AITool {
+    var iconAssetName: String? {
         switch self {
         case .codex: "codex"
         case .claudeCode: "claude-code"
         case .cursorDesktop, .cursorCLI: "cursor"
         case .grokBuildCLI: "grok-build"
         case .openCode: "opencode"
+        case .omp: nil
         }
     }
 }

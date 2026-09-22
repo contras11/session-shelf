@@ -21,8 +21,60 @@ public struct SessionTreeNode: Identifiable, Hashable, Sendable {
     }
 }
 
+/// 系譜ツリーの根をプロジェクトで束ねる。子は自分の project に関係なく根の下に残る。
+public struct ProjectSection: Identifiable, Hashable, Sendable {
+    public let id: String
+    public let project: String?
+    public let displayName: String
+    public let roots: [SessionTreeNode]
+    public let sessionCount: Int
+    public let totalByteCount: Int64
+    public let latestDate: Date
+
+    public init(project: String?, displayName: String, roots: [SessionTreeNode]) {
+        let all = roots.flatMap(\.displayOrder)
+        self.id = project ?? ""
+        self.project = project
+        self.displayName = displayName
+        self.roots = roots
+        self.sessionCount = all.count
+        self.totalByteCount = all.reduce(0) { $0 + $1.byteCount }
+        self.latestDate = all.map(\.date).max() ?? .distantPast
+    }
+}
+
 /// 保存形式ごとのIDを使い、表示と削除で共有する親子構造を組み立てます。
 public enum SessionHierarchy {
+    /// 区分は latestDate 降順。プロジェクト未設定は最後。根の入力順は保持する。
+    public static func projectSections(from roots: [SessionTreeNode]) -> [ProjectSection] {
+        var order: [String?] = []
+        var grouped: [String: [SessionTreeNode]] = [:]
+        for root in roots {
+            let key = root.session.project ?? ""
+            if grouped[key] == nil { order.append(root.session.project) }
+            grouped[key, default: []].append(root)
+        }
+        let names = Dictionary(grouping: order.compactMap { $0 }) { URL(fileURLWithPath: $0).lastPathComponent }
+        let sections = order.map { project -> ProjectSection in
+            let displayName: String
+            if let project {
+                let short = URL(fileURLWithPath: project).lastPathComponent
+                displayName = (names[short]?.count ?? 0) > 1 ? project : short
+            } else {
+                displayName = "プロジェクト未設定"
+            }
+            return ProjectSection(project: project, displayName: displayName, roots: grouped[project ?? ""] ?? [])
+        }
+        return sections.sorted { lhs, rhs in
+            switch (lhs.project, rhs.project) {
+            case (nil, nil): return false
+            case (nil, _): return false
+            case (_, nil): return true
+            default: return lhs.latestDate > rhs.latestDate
+            }
+        }
+    }
+
     public static func roots(from sessions: [SessionSummary]) -> [SessionTreeNode] {
         let byProviderID = Dictionary(
             sessions.compactMap { session in

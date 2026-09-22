@@ -3,6 +3,11 @@ import SwiftUI
 
 struct SessionListView: View {
     @ObservedObject var store: SessionShelfStore
+    @State private var collapsedProjects: Set<String> = []
+
+    private var sections: [ProjectSection] {
+        SessionHierarchy.projectSections(from: nodes)
+    }
 
     private var nodes: [SessionTreeNode] {
         guard let sessions = store.selectedShelf?.sessions else { return [] }
@@ -42,25 +47,22 @@ struct SessionListView: View {
                     get: { store.selectedSessionIDs },
                     set: { ids in store.updateSelection(ids, visibleSessions: sessions) }
                 )) {
-                    OutlineGroup(nodes, children: \.outlineChildren) { node in
-                        SessionRow(node: node)
-                            .tag(node.session.id)
-                            .contextMenu {
-                                let candidates = store.trashCandidates(for: node.session)
-                                let eligibleCount = candidates.filter { $0.isSupported && !$0.isProtected }.count
-                                if SessionHierarchy.hasBlockedMemberInFamily(candidates) {
-                                    Button("親子の一部が保護中") {}
-                                        .disabled(true)
-                                } else if eligibleCount > 0 {
-                                    Button(
-                                        node.session.tool == .openCode ? (eligibleCount == 1 ? "完全に削除" : "\(eligibleCount)件を完全に削除") : (eligibleCount == 1 ? "ゴミ箱へ移す" : "\(eligibleCount)件をゴミ箱へ移す"),
-                                        role: .destructive
-                                    ) {
-                                        store.requestTrash(candidates)
-                                    }
-                                    .disabled(store.isDeletingSessions)
+                    let sections = sections
+                    if sections.count > 1 {
+                        ForEach(sections) { section in
+                            DisclosureGroup(isExpanded: Binding(
+                                get: { !collapsedProjects.contains(section.id) },
+                                set: { expanded in
+                                    if expanded { collapsedProjects.remove(section.id) } else { collapsedProjects.insert(section.id) }
                                 }
+                            )) {
+                                outline(section.roots)
+                            } label: {
+                                ProjectHeader(section: section)
                             }
+                        }
+                    } else {
+                        outline(nodes)
                     }
                 }
                 .listStyle(.inset)
@@ -68,6 +70,9 @@ struct SessionListView: View {
         }
         .navigationTitle(store.selectedTool?.displayName ?? "セッション")
         .searchable(text: $store.searchText, prompt: "タイトル・プロジェクトを検索")
+        .onChange(of: store.selectedTool) { _, _ in
+            collapsedProjects.removeAll()
+        }
         .onChange(of: sessions.map(\.id)) { _, _ in
             // 検索で見えなくなった項目を一括削除へ混ぜない。
             store.reconcileSelection(visibleSessions: sessions)
@@ -91,6 +96,56 @@ struct SessionListView: View {
                 .disabled(store.isScanning)
             }
         }
+    }
+
+    private func outline(_ roots: [SessionTreeNode]) -> some View {
+        OutlineGroup(roots, children: \.outlineChildren) { node in
+            SessionRow(node: node)
+                .tag(node.session.id)
+                .contextMenu {
+                    let candidates = store.trashCandidates(for: node.session)
+                    let eligibleCount = candidates.filter { $0.isSupported && !$0.isProtected }.count
+                    if SessionHierarchy.hasBlockedMemberInFamily(candidates) {
+                        Button("親子の一部が保護中") {}
+                            .disabled(true)
+                    } else if eligibleCount > 0 {
+                        Button(
+                            node.session.tool == .openCode ? (eligibleCount == 1 ? "完全に削除" : "\(eligibleCount)件を完全に削除") : (eligibleCount == 1 ? "ゴミ箱へ移す" : "\(eligibleCount)件をゴミ箱へ移す"),
+                            role: .destructive
+                        ) {
+                            store.requestTrash(candidates)
+                        }
+                        .disabled(store.isDeletingSessions || store.isPreparingTrash)
+                    }
+                }
+        }
+    }
+}
+
+private struct ProjectHeader: View {
+    let section: ProjectSection
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: section.project == nil ? "questionmark.folder" : "folder")
+                .foregroundStyle(.secondary)
+            Text(section.displayName)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .help(section.project ?? "プロジェクト未設定")
+            Spacer(minLength: 8)
+            Text("\(section.sessionCount)件")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            Text(section.totalByteCount.formatted(.byteCount(style: .file)))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            Text(section.latestDate.formatted(.relative(presentation: .named)))
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
     }
 }
 

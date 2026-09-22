@@ -4,21 +4,24 @@ Session Shelfは、AI開発ツールがローカルに保存した過去セッ�
 
 ## 主な機能
 
-- Codex、Claude Code、Cursor Desktop、Cursor CLI、Grok Build CLI、OpenCodeを最上位で分けて表示
+- Codex、Claude Code、Cursor Desktop、Cursor CLI、Grok Build CLI、OpenCode、ompを最上位で分けて表示
 - セッション一覧にタイトル、更新日時、容量、関連プロジェクト、短い概要を表示
+- 複数プロジェクトがあるツールでは、セッション一覧をプロジェクトごとに折りたたみ表示
 - CodexとOpenCodeのサブエージェントを親セッションの下へ折りたたみ表示
 - 詳細画面を「会話」「操作履歴」「変更したファイル」「生ログ」に分けて表示
 - CursorのプランMarkdownを閲覧
 - CursorとGrokのプランを、概要・タスク・Markdown本文に分けた専用画面で表示
 - システム指示や実行環境は通常会話から分離し、必要なときだけ展開
+- Claude Codeとompの思考ブロックは折りたたんだ状態で表示し、必要なときだけ展開
 - タイトル・概要・プロジェクト名によるローカル検索
 - 対応する保存場所がない場合は「未検出」、場所はあるが読めない場合は「未対応の保存形式」と想定パス候補を表示
 - 対応済みの非アクティブなセッションをmacOSのゴミ箱へ移動（OpenCodeは公式CLIによる不可逆削除）
-- Claude Code・Cursor CLI・Codexでは、会話ログと同じセッションの関連ファイルも一緒にゴミ箱へ移動
+- 削除前の確認画面で、移動するファイルとフォルダのパスと容量、除外する項目を一覧表示
+- Claude Code・Cursor CLI・Codex・ompでは、会話ログと同じセッションの関連ファイルも一緒にゴミ箱へ移動
 - 親セッションの削除時は、配下のサブエージェントを子から親の順にまとめて削除
-- 6ツールのキャッシュ、一時ファイル、生成物、診断記録を用途と安全度ごとに可視化
+- 7ツールのキャッシュ、一時ファイル、生成物、診断記録を用途と安全度ごとに可視化
 - サイドバーのストレージ配下から、各ツールの容量と整理候補へ切り替え
-- 各サービスの公式アイコンを表示し、「設定…」から表示・非表示と並び順を変更
+- 各サービスの公式アイコンを表示し、「設定…」から表示・非表示と並び順を変更。非表示にしたツールはサイドバーとストレージ集計から外れるが、検出は続ける
 - 「再生成可能」「要確認」「保護」の3段階で影響を説明し、確認後に安全な項目をゴミ箱へ移動
 
 ## ローカル性と安全性
@@ -26,8 +29,9 @@ Session Shelfは、AI開発ツールがローカルに保存した過去セッ�
 - ログの読み取り、検索、概要生成はすべてMac内で完結します。
 - 外部通信、クラウド要約、解析APIへの送信は行いません。
 - 元ログをこのプロジェクトへコピーしません。画面表示時に保存元を読み取り専用で開きます。
-- 通常5ツールの削除はmacOSのゴミ箱へ移動します。OpenCodeだけは専用警告後、公式CLIでゴミ箱を経由せず完全削除します。
-- Claude Codeは会話JSONLに加え、同じIDの作業ディレクトリ、`file-history`、`session-env`、`tasks`を一緒に移します。Cursor CLIは会話ディレクトリごと移します。Codexは一致する`shell_snapshots`も移します。Codexの`session_index.jsonl`と内部SQLiteは共有索引のため書き換えません。
+- 通常6ツールの削除はmacOSのゴミ箱へ移動します。OpenCodeだけは専用警告後、公式CLIでゴミ箱を経由せず完全削除します。
+- Claude Codeは会話JSONLに加え、同じIDの作業ディレクトリ、`file-history`、`session-env`、`tasks`を一緒に移します。Cursor CLIは会話ディレクトリごと移します。Codexは一致する`shell_snapshots`も移します。ompは会話JSONLと同名のbashログディレクトリを一緒に移します。Codexの`session_index.jsonl`と内部SQLiteは共有索引のため書き換えません。
+- ompのプロジェクト名はセッションディレクトリ名から復号し、ログ本文の`cwd`は使いません。`parentId`はファイル内のレコード連鎖で、親セッションとしては扱いません。`agent.db`、`config.yml`、`history.db`、`logs`は読みません。
 - Codexの`parent_thread_id`とOpenCodeの`parent_id`を使って親子関係を表示します。親が見つからないサブエージェントは「親なし」と表示します。
 - 親セッションをゴミ箱へ移すときは、配下のサブエージェントも削除候補へ含めます。保護中または未対応の子がある場合は、親だけを削除して孤立させないよう操作を拒否します。
 - 移動前に確認を表示し、保存場所の外にあるファイルは拒否します。
@@ -45,6 +49,7 @@ Session Shelfは、AI開発ツールがローカルに保存した過去セッ�
 | Cursor CLI | `~/.cursor/projects/*/agent-transcripts`のJSONL。`~/.cursor/chats`の内部SQLiteは検出のみ |
 | Grok Build CLI | `~/.grok/sessions`のセッションディレクトリ、要約、会話JSONL、プランMarkdown |
 | OpenCode | `~/.local/share/opencode/opencode.db`（session/message/partのみ読み取り） |
+| omp | `~/.omp/agent/sessions/<プロジェクト>/<日時>_<UUID>.jsonl`と同名のbashログディレクトリ |
 
 保存形式は各ツールの公開契約ではないため、形式が変わったログは安全側に倒して「未対応の保存形式」と表示します。
 
@@ -55,6 +60,8 @@ Session Shelfは、AI開発ツールがローカルに保存した過去セッ�
 OpenCodeの「完全に削除」はゴミ箱を経由せず、公式CLI `opencode session delete <ID>` を実行します。CLIは`PATH`を優先し、HomebrewとMacPortsの標準パスも確認します。空または相対的な`PATH`要素は使用しません。削除直前に存在・更新時刻・圧縮状態を再確認し、CLIがない場合や状態が変わった場合は実行しません。
 
 OpenCodeのストレージは`~/.local/share/opencode`、`~/.local/state/opencode`、`~/.cache/opencode`、`~/.config/opencode`を対象に可視化します。cacheの既知項目は再生成可能、shareのlog・tool-outputとstateのprompt-historyは要確認、DB・auth・config・未知形式は保護対象です。
+
+ompのストレージは`~/.omp`を対象に可視化します。`agent/cache`は再生成可能、`agent/terminal-sessions`は要確認、`agent/sessions`は会話履歴として保護（会話画面から個別に削除）、`agent.db`・`config.yml`・`history.db`・`models.db`・`logs`と未知形式は保護対象です。
 
 - 更新から30分以内で、作業中の可能性があるセッション
 - Cursorの内部SQLiteなど、設定・認証・状態データを含む可能性がある保存物

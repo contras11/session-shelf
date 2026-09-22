@@ -7,6 +7,7 @@ public enum AITool: String, CaseIterable, Identifiable, Codable, Sendable {
     case cursorCLI
     case grokBuildCLI
     case openCode
+    case omp
 
     public var id: String { rawValue }
 
@@ -18,6 +19,7 @@ public enum AITool: String, CaseIterable, Identifiable, Codable, Sendable {
         case .cursorCLI: "Cursor CLI"
         case .grokBuildCLI: "Grok Build CLI"
         case .openCode: "OpenCode"
+        case .omp: "omp"
         }
     }
 
@@ -29,8 +31,76 @@ public enum AITool: String, CaseIterable, Identifiable, Codable, Sendable {
         case .cursorCLI: "chevron.left.forwardslash.chevron.right"
         case .grokBuildCLI: "hammer"
         case .openCode: "terminal.fill"
+        case .omp: "circle.hexagonpath"
         }
     }
+}
+
+/// 削除確認に表示する「何がどれだけ消えるか」。表示専用で、削除の許可トークンではない。
+public struct DeletionPlan: Equatable, Sendable {
+    public struct Item: Identifiable, Hashable, Sendable {
+        public enum Kind: Hashable, Sendable {
+            case sessionLog
+            case companionDirectory
+            case relatedDirectory
+            case relatedFile
+            case shellSnapshot
+            case openCodeCLI
+        }
+
+        public let id: String
+        public let sessionID: String
+        public let sessionTitle: String
+        public let tool: AITool
+        public let kind: Kind
+        /// `openCodeCLI` はゴミ箱へ移すパスを持たないため nil。
+        public let location: URL?
+        public let byteCount: Int64
+        public let isDirectory: Bool
+
+        public init(
+            sessionID: String,
+            sessionTitle: String,
+            tool: AITool,
+            kind: Kind,
+            location: URL?,
+            byteCount: Int64,
+            isDirectory: Bool
+        ) {
+            self.id = "\(sessionID)\u{1F}\(location?.path ?? "cli")"
+            self.sessionID = sessionID
+            self.sessionTitle = sessionTitle
+            self.tool = tool
+            self.kind = kind
+            self.location = location
+            self.byteCount = byteCount
+            self.isDirectory = isDirectory
+        }
+    }
+
+    public struct Exclusion: Hashable, Sendable {
+        public let sessionID: String
+        public let sessionTitle: String
+        public let reason: String
+
+        public init(sessionID: String, sessionTitle: String, reason: String) {
+            self.sessionID = sessionID
+            self.sessionTitle = sessionTitle
+            self.reason = reason
+        }
+    }
+
+    public let items: [Item]
+    public let exclusions: [Exclusion]
+
+    public init(items: [Item] = [], exclusions: [Exclusion] = []) {
+        self.items = items
+        self.exclusions = exclusions
+    }
+
+    public var totalByteCount: Int64 { items.reduce(0) { $0 + $1.byteCount } }
+    public var fileCount: Int { items.count }
+    public var usesOpenCodeCLI: Bool { items.contains { $0.kind == .openCodeCLI } }
 }
 
 public enum DetectionStatus: Equatable, Sendable {
@@ -314,6 +384,7 @@ public enum ConversationEntryKind: Equatable, Sendable {
     case context(label: String)
     case toolCall(name: String)
     case toolResult(result: OperationResult)
+    case thinking
 }
 
 public enum OperationCategory: String, Sendable {

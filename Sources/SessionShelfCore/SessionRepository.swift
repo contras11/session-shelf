@@ -35,7 +35,61 @@ public struct SessionRepository: @unchecked Sendable {
         case .cursorCLI: scanCursorCLI()
         case .grokBuildCLI: scanGrok()
         case .openCode: scanOpenCode()
+        case .omp: scanOMP()
         }
+    }
+
+    /// 削除確認用の計画。stat だけを行い、ファイルシステムは変更しない。
+    /// 保護中または未対応のセッションは items に載せず exclusions へ回す。
+    public func deletionPlan(for sessions: [SessionSummary]) -> DeletionPlan {
+        var items: [DeletionPlan.Item] = []
+        var exclusions: [DeletionPlan.Exclusion] = []
+        for session in sessions {
+            guard session.isSupported else {
+                exclusions.append(DeletionPlan.Exclusion(sessionID: session.id, sessionTitle: session.title, reason: "未対応の保存形式"))
+                continue
+            }
+            guard !session.isProtected else {
+                exclusions.append(DeletionPlan.Exclusion(sessionID: session.id, sessionTitle: session.title, reason: session.protectionReason ?? "保護中"))
+                continue
+            }
+            if case .openCodeCLI = session.deletionMode {
+                items.append(DeletionPlan.Item(
+                    sessionID: session.id, sessionTitle: session.title, tool: session.tool,
+                    kind: .openCodeCLI, location: nil, byteCount: session.byteCount, isDirectory: false
+                ))
+                continue
+            }
+            items.append(planItem(for: session.deletionURL, kind: .sessionLog, session: session))
+            for related in session.relatedURLs where exists(related) {
+                items.append(planItem(for: related, kind: relatedKind(of: related, session: session), session: session))
+            }
+        }
+        return DeletionPlan(items: items, exclusions: exclusions)
+    }
+
+    private func planItem(for url: URL, kind: DeletionPlan.Item.Kind, session: SessionSummary) -> DeletionPlan.Item {
+        var isDirectory: ObjCBool = false
+        _ = fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory)
+        return DeletionPlan.Item(
+            sessionID: session.id,
+            sessionTitle: session.title,
+            tool: session.tool,
+            kind: kind,
+            location: url.standardizedFileURL,
+            byteCount: itemSize(url),
+            isDirectory: isDirectory.boolValue
+        )
+    }
+
+    private func relatedKind(of url: URL, session: SessionSummary) -> DeletionPlan.Item.Kind {
+        if session.tool == .codex { return .shellSnapshot }
+        if url.standardizedFileURL.path == session.sourceURL.deletingPathExtension().standardizedFileURL.path {
+            return .companionDirectory
+        }
+        var isDirectory: ObjCBool = false
+        _ = fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory)
+        return isDirectory.boolValue ? .relatedDirectory : .relatedFile
     }
 
     public func loadDetail(for session: SessionSummary) throws -> SessionDetail {
@@ -120,7 +174,18 @@ public struct SessionRepository: @unchecked Sendable {
             ["\(home)/.grok/sessions"]
         case .openCode:
             ["\(home)/.local/share/opencode/opencode.db"]
+        case .omp:
+            ["\(home)/.omp/agent/sessions"]
         }
+    }
+
+    private func scanOMP() -> ToolShelf {
+        shelf(.omp, sessions: OMPRepository.scan(
+            home: homeDirectory,
+            fileManager: fileManager,
+            modifiedDate: modifiedDate,
+            isRecentlyModified: isRecentlyModified
+        ))
     }
 
     private func scanCodex() -> ToolShelf {
@@ -553,6 +618,8 @@ public struct SessionRepository: @unchecked Sendable {
         case .codex:
             let snapshots = homeDirectory.appendingPathComponent(".codex/shell_snapshots", isDirectory: true).standardizedFileURL
             return item.deletingLastPathComponent().standardizedFileURL == snapshots && isStrictDescendant(item, of: snapshots)
+        case .omp:
+            return OMPRepository.isAllowedRelatedURL(item, for: session, home: homeDirectory, fileManager: fileManager)
         default:
             return false
         }
@@ -574,6 +641,8 @@ public struct SessionRepository: @unchecked Sendable {
             roots = [homeDirectory.appendingPathComponent(".grok/sessions")]
         case .openCode:
             return false
+        case .omp:
+            return OMPRepository.isAllowedDeletionURL(url, home: homeDirectory, fileManager: fileManager)
         }
         return roots.contains { root in
             let base = root.standardizedFileURL.path + "/"

@@ -42,8 +42,8 @@ struct ToolSidebar: View {
                         Spacer()
                         if store.isScanningStorage {
                             ProgressView().controlSize(.small)
-                        } else if store.storageReport.totalByteCount > 0 {
-                            Text(store.storageReport.totalByteCount.formatted(.byteCount(style: .file)))
+                        } else if store.storageTotalByteCount(for: .all) > 0 {
+                            Text(store.storageTotalByteCount(for: .all).formatted(.byteCount(style: .file)))
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
                         }

@@ -4,6 +4,7 @@ import SessionShelfCore
 struct TrashRequest: Identifiable {
     let id = UUID()
     let sessions: [SessionSummary]
+    let plan: DeletionPlan
 
     var eligible: [SessionSummary] {
         sessions.filter { $0.isSupported && !$0.isProtected }
@@ -12,7 +13,8 @@ struct TrashRequest: Identifiable {
     var excludedCount: Int { sessions.count - eligible.count }
     var subagentCount: Int { sessions.filter { $0.lineage?.isSubagent == true }.count }
     var rootSessionCount: Int { sessions.count - subagentCount }
-    var totalByteCount: Int64 { eligible.reduce(0) { $0 + $1.byteCount } }
+    var totalByteCount: Int64 { plan.totalByteCount }
+    var usesOpenCodeCLI: Bool { sessions.contains { $0.tool == .openCode } }
 }
 
 enum SidebarDestination: Hashable {
@@ -115,11 +117,14 @@ final class SessionShelfStore: ObservableObject {
     @Published var storageTrashRequest: StorageTrashRequest?
     @Published var isDeletingSessions = false
     @Published var isDeletingStorage = false
+    @Published private(set) var isPreparingTrash = false
     @Published private(set) var lastStorageToolFilter: StorageToolFilter = .all
+    @Published private(set) var visibleTools: [AITool] = AITool.allCases
 
     private let repository: SessionRepository
     private let storageRepository: StorageRepository
     private let deleteSession: @Sendable (SessionSummary, SessionDeletionMode) throws -> Void
+    private var trashPlanGeneration = UUID()
     private var scanGeneration = UUID()
     private var storageScanGeneration = UUID()
     private var storageScanTask: Task<Void, Never>?
@@ -145,7 +150,8 @@ final class SessionShelfStore: ObservableObject {
         selectedDestination?.storageFilter ?? lastStorageToolFilter
     }
 
-    func reconcileSidebarSelection(visibleTools: [AITool]) {
+    func applyToolVisibility(_ tools: [AITool]) {
+        visibleTools = tools
         switch selectedDestination {
         case .tool(let tool) where !visibleTools.contains(tool):
             selectedDestination = visibleTools.first.map(SidebarDestination.tool) ?? .storage(.all)
@@ -170,7 +176,8 @@ final class SessionShelfStore: ObservableObject {
 
     var visibleStorageItems: [StorageItem] {
         storageReport.items.filter { item in
-            storageToolFilter.includes(item)
+            visibleTools.contains(item.tool)
+                && storageToolFilter.includes(item)
                 && storageFilter.includes(item)
                 && (storageSearchText.isEmpty
                     || item.title.localizedCaseInsensitiveContains(storageSearchText)
@@ -180,7 +187,7 @@ final class SessionShelfStore: ObservableObject {
     }
 
     var storageItemsForSelectedTool: [StorageItem] {
-        storageReport.items.filter(storageToolFilter.includes)
+        storageItems(for: storageToolFilter)
     }
 
     var selectedStorageTotalByteCount: Int64 {
@@ -194,7 +201,7 @@ final class SessionShelfStore: ObservableObject {
     }
 
     func storageItems(for filter: StorageToolFilter) -> [StorageItem] {
-        storageReport.items.filter(filter.includes)
+        storageReport.items.filter { visibleTools.contains($0.tool) && filter.includes($0) }
     }
 
     func storageTotalByteCount(for filter: StorageToolFilter) -> Int64 {
@@ -227,7 +234,9 @@ final class SessionShelfStore: ObservableObject {
             guard scanGeneration == generation else { return }
             shelves = result
             isScanning = false
-            if selectedDestination == nil { selectedDestination = .tool(.codex) }
+            if selectedDestination == nil {
+                selectedDestination = visibleTools.first.map(SidebarDestination.tool) ?? .storage(.all)
+            }
             reconcileSelection(visibleSessions: selectedShelf?.sessions ?? [])
         }
     }
@@ -332,19 +341,29 @@ final class SessionShelfStore: ObservableObject {
     }
 
     func requestTrash(_ sessions: [SessionSummary]) {
-        guard !isDeletingSessions else { return }
+        guard !isDeletingSessions, !isPreparingTrash else { return }
         var seen: Set<String> = []
         let unique = sessions.filter { seen.insert($0.id).inserted }
         if SessionHierarchy.hasBlockedMemberInFamily(unique) {
             errorMessage = "親子セッションの一部が保護中または未対応のため、まとめて削除できません"
             return
         }
-        let request = TrashRequest(sessions: unique)
-        guard !request.eligible.isEmpty else {
+        guard unique.contains(where: { $0.isSupported && !$0.isProtected }) else {
             errorMessage = unique.contains { $0.tool == .openCode } ? "選択したOpenCodeは完全に削除できません" : "選択したログは保護中または未対応のため、ゴミ箱へ移せません"
             return
         }
-        trashRequest = request
+        let generation = UUID()
+        trashPlanGeneration = generation
+        isPreparingTrash = true
+        let repository = repository
+        Task {
+            let plan = await Task.detached(priority: .userInitiated) {
+                repository.deletionPlan(for: unique)
+            }.value
+            guard trashPlanGeneration == generation else { return }
+            isPreparingTrash = false
+            trashRequest = TrashRequest(sessions: unique, plan: plan)
+        }
     }
 
     func requestTrashForSelection() {
