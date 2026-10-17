@@ -111,7 +111,7 @@ public struct SessionRepository: @unchecked Sendable {
         default:
             parsed = try LogParsing.parseJSONL(at: session.sourceURL, tool: session.tool)
         }
-        let raw: (String, Bool) = session.tool == .openCode ? (try OpenCodeRepository.raw(session: session), false) : (try LogParsing.rawText(for: session))
+        let raw: (String, Bool) = session.tool == .openCode ? (try OpenCodeRepository.rawLog(session: session)) : (try LogParsing.rawText(for: session))
         return SessionDetail(
             conversation: parsed.conversation,
             operations: parsed.operations,
@@ -153,14 +153,29 @@ public struct SessionRepository: @unchecked Sendable {
     public func delete(_ session: SessionSummary, mode: SessionDeletionMode) throws {
         guard mode == session.deletionMode else { throw SessionShelfError.protectedItem("削除対象の状態が変わりました") }
         guard session.tool == .openCode, case .openCodeCLI(let id) = mode else { return try moveToTrash(session) }
+        guard session.id == "opencode:\(id)", session.isSupported, !session.isProtected else {
+            throw SessionShelfError.protectedItem("OpenCodeの削除対象または保護状態を確認できません")
+        }
         let db = session.sourceURL
-        try OpenCodeRepository.delete(
+        try OpenCodeSessionDeletion.delete(
             sessionID: id,
             database: db,
             expectedUpdated: session.date,
             executables: openCodeExecutables,
-            timeout: openCodeDeletionTimeout
+            timeout: openCodeDeletionTimeout,
+            validateDatabase: { try validateOpenCodeDatabase(db) }
         )
+    }
+
+    private func validateOpenCodeDatabase(_ database: URL) throws {
+        let allowed = homeDirectory.appendingPathComponent(".local/share/opencode/opencode.db").standardizedFileURL
+        guard database.standardizedFileURL == allowed else { throw SessionShelfError.outsideAllowedLocation }
+        var component = database.standardizedFileURL
+        while true {
+            if isSymbolicLink(component) { throw SessionShelfError.protectedItem("シンボリックリンクを含むため") }
+            if component.path == homeDirectory.path { break }
+            component.deleteLastPathComponent()
+        }
     }
 
     public func candidatePaths(for tool: AITool) -> [String] {

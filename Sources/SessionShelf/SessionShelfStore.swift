@@ -343,8 +343,10 @@ final class SessionShelfStore: ObservableObject {
 
     func requestTrash(_ sessions: [SessionSummary]) {
         guard !isDeletingSessions, !isPreparingTrash else { return }
-        var seen: Set<String> = []
-        let unique = sessions.filter { seen.insert($0.id).inserted }
+        let unique = SessionHierarchy.deletionOrder(
+            startingAt: sessions,
+            in: selectedShelf?.sessions ?? sessions
+        )
         if SessionHierarchy.hasBlockedMemberInFamily(unique) {
             errorMessage = "親子セッションの一部が保護中または未対応のため、まとめて削除できません"
             return

@@ -1,191 +1,212 @@
 import Foundation
-import CSQLite3
 
-/// OpenCodeの公開会話テーブルだけを読む、読み取り専用アダプタです。
+/// OpenCode v1/v2の会話テーブルを既存の画面モデルへ変換します。
 public enum OpenCodeRepository {
-    struct Row { let values: [String: String?] }
-
     static func scan(database: URL) throws -> [SessionSummary] {
-        let sessions = try query(database, "SELECT id, project_id, parent_id, slug, directory, title, time_created, time_updated, time_compacting, time_archived FROM session")
-        return sessions.compactMap { row in
-            guard let id = row.values["id"] ?? nil else { return nil }
-            let updated = date(row.values["time_updated"] ?? nil) ?? .distantPast
-            let title = value(row, "title") ?? value(row, "slug") ?? id
-            let compacting = value(row, "time_compacting")
-            let archived = value(row, "time_archived")
-            let protected = compacting != nil || (Date().timeIntervalSince(updated) < 1800)
-            let reason = compacting != nil ? "OpenCodeが圧縮処理中" : (protected ? "更新直後のセッション" : nil)
-            return SessionSummary(id: "opencode:\(id)", tool: .openCode, title: title, date: updated, byteCount: 0, project: value(row, "directory") ?? value(row, "project_id"), overview: archived != nil ? "OpenCodeアーカイブ済みセッション" : "OpenCodeセッション", sourceURL: database, deletionURL: database, lineage: SessionLineage(sessionID: id, parentSessionID: value(row, "parent_id")), isProtected: protected, protectionReason: reason)
+        let db = try OpenCodeDatabase(database)
+        return try db.rows("SELECT \(db.sessionColumns) FROM \(db.format.sessionTable)").compactMap { row in
+            guard let id = row["id"] else { return nil }
+            let updated = OpenCodeDatabase.date(row["time_updated"]) ?? .distantPast
+            let reason = OpenCodeDatabase.protectionReason(row)
+            return SessionSummary(
+                id: "opencode:\(id)", tool: .openCode,
+                title: row["title"] ?? row["slug"] ?? id, date: updated, byteCount: 0,
+                project: projectPath(row) ?? row["project_id"],
+                overview: row["time_archived"] != nil ? "OpenCodeアーカイブ済みセッション" : "OpenCodeセッション",
+                sourceURL: database, lineage: SessionLineage(sessionID: id, parentSessionID: row["parent_id"]),
+                isProtected: reason != nil, protectionReason: reason
+            )
         }.sorted { $0.date > $1.date }
     }
 
-    static func loadDetail(session: SessionSummary) throws -> ParsedLog {
-        let id = session.id.replacingOccurrences(of: "opencode:", with: "")
+    static func loadDetail(session: SessionSummary, byteLimit: Int = LogLimits.detailBytes) throws -> ParsedLog {
+        let db = try OpenCodeDatabase(session.sourceURL)
+        let id = OpenCodeDatabase.quoted(providerID(session))
         var result = ParsedLog(title: session.title, project: session.project, overview: session.overview)
-        let messages = try query(session.sourceURL, "SELECT id, time_created, data FROM message WHERE session_id = '\(sql(id))' ORDER BY time_created ASC")
-        for message in messages {
-            guard let dataString = message.values["data"] ?? nil, let data = dataString.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-            let speaker: Speaker = (object["role"] as? String).flatMap(Speaker.init(rawValue:)) ?? .system
-            let timestamp = date(message.values["time_created"] ?? nil)
-            let parts = try query(session.sourceURL, "SELECT data FROM part WHERE message_id = '\(sql(value(message, "id") ?? ""))' ORDER BY time_created ASC")
+        var budget = OpenCodeDatabase.Budget(bytes: byteLimit)
+        if db.format == .v2 {
+            let row = try db.rows("SELECT directory, path FROM session_v2 WHERE id=\(id)").first ?? [:]
+            let base = projectPath(row)
+            let messages = try db.rows("SELECT type, time_created, data FROM session_message WHERE session_id=\(id) ORDER BY seq ASC", budget: &budget)
+            for message in messages {
+                guard let object = json(message["data"]) else { continue }
+                appendV2(message, object: object, base: base, snapshotBase: row["directory"], into: &result)
+            }
+        } else {
+            let parts = try db.rows("SELECT message.data AS message_data, message.time_created, part.data FROM message JOIN part ON part.message_id=message.id AND part.session_id=message.session_id WHERE message.session_id=\(id) ORDER BY message.time_created ASC, message.id ASC, part.time_created ASC, part.id ASC", budget: &budget)
             for part in parts {
-                guard let raw = value(part, "data"), let pdata = raw.data(using: .utf8), let p = try? JSONSerialization.jsonObject(with: pdata) as? [String: Any], let type = p["type"] as? String else { continue }
-                if type == "text", let text = p["text"] as? String {
-                    let (clean, controls) = splitControlText(text)
-                    if !clean.isEmpty { result.conversation.append(ConversationEntry(speaker: speaker, text: clean, timestamp: timestamp)) }
-                    for control in controls {
-                        let category: OperationCategory = ["write", "patch", "edit"].contains(where: control.name.lowercased().contains) ? .edit : (["read", "glob", "grep"].contains(where: control.name.lowercased().contains) ? .investigation : .command)
-                        result.operations.append(OperationEntry(category: category, summary: "\(control.name) \(control.args)", result: .unknown, timestamp: timestamp))
-                        result.conversation.append(ConversationEntry(speaker: .assistant, text: "\(control.name) \(control.args)", timestamp: timestamp, kind: .toolCall(name: control.name)))
-                    }
+                guard let object = json(part["message_data"]), let p = json(part["data"]) else { continue }
+                let speaker = (object["role"] as? String).flatMap(Speaker.init(rawValue:)) ?? .system
+                let timestamp = OpenCodeDatabase.date(part["time_created"])
+                if p["type"] as? String == "text", let text = p["text"] as? String {
+                    appendText(text, speaker: speaker, timestamp: timestamp, into: &result)
                 }
-                if type == "tool", let name = p["tool"] as? String {
-                    let state = p["state"] as? [String: Any] ?? [:]
-                    let status = state["status"] as? String
-                    let outcome: OperationResult = status == "completed" ? .success : (status == "error" ? .failure : .unknown)
-                    let summary = "\(name)\(summaryText(state["input"] ?? state["output"]))"
-                    let lower = name.lowercased()
-                    let category: OperationCategory = ["write", "patch", "edit"].contains(where: lower.contains) ? .edit : (["read", "search"].contains(where: lower.contains) ? .investigation : .command)
-                    result.operations.append(OperationEntry(category: category, summary: summary, result: outcome, timestamp: timestamp))
-                    result.conversation.append(ConversationEntry(speaker: .assistant, text: summary, timestamp: timestamp, kind: .toolCall(name: name)))
-                    if let output = state["output"] { result.conversation.append(ConversationEntry(speaker: .assistant, text: summaryText(output), timestamp: timestamp, kind: .toolResult(result: outcome))) }
-                    extractPaths(state["input"], into: &result.changedFiles)
-                    extractPaths(state["output"], into: &result.changedFiles)
+                if p["type"] as? String == "tool", let name = p["tool"] as? String {
+                    appendTool(name: name, state: p["state"] as? [String: Any] ?? [:], timestamp: timestamp, base: nil, into: &result)
                 }
             }
         }
-        result.wasTruncated = false
+        result.wasTruncated = result.wasTruncated || budget.wasTruncated
         return result
+    }
+
+    private static func appendV2(_ row: OpenCodeDatabase.Row, object: [String: Any], base: String?, snapshotBase: String?, into result: inout ParsedLog) {
+        let timestamp = OpenCodeDatabase.date(row["time_created"])
+        switch row["type"] {
+        case "user":
+            if let text = object["text"] as? String { appendText(text, speaker: .user, timestamp: timestamp, into: &result) }
+        case "assistant":
+            for content in object["content"] as? [[String: Any]] ?? [] {
+                switch content["type"] as? String {
+                case "text":
+                    if let text = content["text"] as? String { appendText(text, speaker: .assistant, timestamp: timestamp, into: &result) }
+                case "reasoning":
+                    if let text = content["text"] as? String, !text.isEmpty {
+                        result.conversation.append(ConversationEntry(speaker: .assistant, text: text, timestamp: timestamp, kind: .thinking))
+                    }
+                case "tool":
+                    if let name = content["name"] as? String {
+                        appendTool(name: name, state: content["state"] as? [String: Any] ?? [:], timestamp: timestamp, base: base, into: &result)
+                    }
+                default: break
+                }
+            }
+            let snapshot = object["snapshot"] as? [String: Any]
+            for path in snapshot?["files"] as? [String] ?? [] {
+                if let path = absolutePath(path, base: snapshotBase) { result.changedFiles.insert(ChangedFile(path: path)) }
+            }
+        case "system", "synthetic", "skill", "compaction":
+            if let text = object["text"] as? String ?? object["summary"] as? String, !text.isEmpty {
+                result.conversation.append(ConversationEntry(speaker: .system, text: text, timestamp: timestamp, kind: .context(label: row["type"] == "compaction" ? "圧縮の要約" : "OpenCodeの内部情報")))
+            }
+        case "shell":
+            let status = object["status"] as? String
+            let exit = object["exit"] as? Int
+            let outcome: OperationResult = status == "exited" && exit == 0 ? .success : (status == "timeout" || status == "killed" || (status == "exited" && exit != nil) ? .failure : .unknown)
+            let command = object["command"] as? String ?? "shell"
+            result.operations.append(OperationEntry(category: .command, summary: command, result: outcome, timestamp: timestamp))
+            result.conversation.append(ConversationEntry(speaker: .assistant, text: command, timestamp: timestamp, kind: .toolCall(name: "shell")))
+            if let output = object["output"] as? [String: Any], let text = output["output"] as? String {
+                result.conversation.append(ConversationEntry(speaker: .assistant, text: text, timestamp: timestamp, kind: .toolResult(result: outcome)))
+                if output["truncated"] as? Bool == true { result.wasTruncated = true }
+            }
+        default: break
+        }
+    }
+
+    private static func appendText(_ text: String, speaker: Speaker, timestamp: Date?, into result: inout ParsedLog) {
+        let (clean, controls) = splitControlText(text)
+        if !clean.isEmpty { result.conversation.append(ConversationEntry(speaker: speaker, text: clean, timestamp: timestamp)) }
+        for control in controls {
+            let summary = "\(control.name) \(control.args)"
+            result.operations.append(OperationEntry(category: category(control.name), summary: summary, result: .unknown, timestamp: timestamp))
+            result.conversation.append(ConversationEntry(speaker: .assistant, text: summary, timestamp: timestamp, kind: .toolCall(name: control.name)))
+        }
+    }
+
+    private static func appendTool(name: String, state: [String: Any], timestamp: Date?, base: String?, into result: inout ParsedLog) {
+        let status = state["status"] as? String
+        let outcome: OperationResult = status == "completed" ? .success : (status == "error" ? .failure : .unknown)
+        let kind = category(name)
+        let summary = name + summaryText(state["input"] ?? state["output"])
+        result.operations.append(OperationEntry(category: kind, summary: summary, result: outcome, timestamp: timestamp))
+        result.conversation.append(ConversationEntry(speaker: .assistant, text: summary, timestamp: timestamp, kind: .toolCall(name: name)))
+        let content = state["content"] as? [[String: Any]] ?? []
+        var output = content.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }.joined(separator: "\n")
+        if let legacy = state["output"] { output = summaryText(legacy) }
+        if let error = state["error"] as? [String: Any], let message = error["message"] as? String {
+            output = [output, message].filter { !$0.isEmpty }.joined(separator: "\n")
+        }
+        if !output.isEmpty { result.conversation.append(ConversationEntry(speaker: .assistant, text: output, timestamp: timestamp, kind: .toolResult(result: outcome))) }
+        if kind == .edit {
+            extractPaths(state["input"], base: base, into: &result.changedFiles)
+            extractPaths(state["output"], base: base, into: &result.changedFiles)
+        }
+    }
+
+    private static func category(_ name: String) -> OperationCategory {
+        let lower = name.lowercased()
+        if ["write", "patch", "edit"].contains(where: lower.contains) { return .edit }
+        return ["read", "search", "glob", "grep"].contains(where: lower.contains) ? .investigation : .command
     }
 
     private static func summaryText(_ value: Any?) -> String {
         guard let value else { return "" }
         let text: String
-        if let string = value as? String { text = string } else if let data = try? JSONSerialization.data(withJSONObject: value), let encoded = String(data: data, encoding: .utf8) { text = encoded } else { return "" }
+        if let string = value as? String { text = string }
+        else if let data = try? JSONSerialization.data(withJSONObject: value), let encoded = String(data: data, encoding: .utf8) { text = encoded }
+        else { return "" }
         let clipped = text.count > 180 ? String(text.prefix(180)) + "…" : text
         return clipped.isEmpty ? "" : " (\(clipped))"
     }
 
-    private static func extractPaths(_ value: Any?, into files: inout Set<ChangedFile>) {
+    private static func extractPaths(_ value: Any?, base: String?, into files: inout Set<ChangedFile>) {
         if let object = value as? [String: Any] {
             for (key, child) in object {
-                if ["path", "file", "file_path"].contains(key.lowercased()), let path = child as? String, path.hasPrefix("/") { files.insert(ChangedFile(path: path)) }
-                extractPaths(child, into: &files)
+                if ["path", "file", "file_path", "filepath"].contains(key.lowercased()), let path = child as? String,
+                   let path = absolutePath(path, base: base) { files.insert(ChangedFile(path: path)) }
+                extractPaths(child, base: base, into: &files)
             }
-        } else if let array = value as? [Any] { for child in array { extractPaths(child, into: &files) } }
+        } else if let array = value as? [Any] {
+            for child in array { extractPaths(child, base: base, into: &files) }
+        }
+    }
+
+    private static func absolutePath(_ path: String, base: String?) -> String? {
+        guard !path.isEmpty else { return nil }
+        if path.hasPrefix("/") { return URL(fileURLWithPath: path).standardizedFileURL.path }
+        guard let base, base.hasPrefix("/") else { return nil }
+        return URL(fileURLWithPath: base, isDirectory: true).appendingPathComponent(path).standardizedFileURL.path
+    }
+
+    private static func projectPath(_ row: OpenCodeDatabase.Row) -> String? {
+        guard let directory = row["directory"], !directory.isEmpty else { return nil }
+        guard let subpath = row["path"], !subpath.isEmpty else { return directory }
+        return absolutePath(subpath, base: directory)
+    }
+
+    private static func json(_ text: String?) -> [String: Any]? {
+        guard let text, let data = text.data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    private static func providerID(_ session: SessionSummary) -> String {
+        session.id.hasPrefix("opencode:") ? String(session.id.dropFirst("opencode:".count)) : session.id
     }
 
     private static func splitControlText(_ text: String) -> (String, [(name: String, args: String)]) {
         let matches = text.matches(of: #/(?s)(\d{2})❺([A-Za-z0-9_-]+)\s+noneauta(.*?)(?=\d{2}❺|<\|eos\|>|$)/#)
         guard let first = matches.first else { return (text.replacingOccurrences(of: "<|eos|>", with: ""), []) }
         let prefix = String(text[..<first.range.lowerBound])
-        let controls = matches.map { match in
-            (String(match.output.2), String(match.output.3).trimmingCharacters(in: .whitespacesAndNewlines))
-        }
-        var normalized = controls
-        if text.contains("❺grep") && !normalized.contains(where: { $0.0 == "grep" }) { normalized.append(("grep", "")) }
-        return (prefix.replacingOccurrences(of: "<|eos|>", with: ""), normalized)
+        var controls = matches.map { (String($0.output.2), String($0.output.3).trimmingCharacters(in: .whitespacesAndNewlines)) }
+        if text.contains("❺grep") && !controls.contains(where: { $0.0 == "grep" }) { controls.append(("grep", "")) }
+        return (prefix.replacingOccurrences(of: "<|eos|>", with: ""), controls)
     }
 
-    public static func raw(session: SessionSummary) throws -> String {
-        let id = session.id.replacingOccurrences(of: "opencode:", with: "")
-        let tables = ["session": "SELECT id, project_id, title, time_created, time_updated FROM session WHERE id = '\(sql(id))'", "message": "SELECT id, session_id, time_created, time_updated, data FROM message WHERE session_id = '\(sql(id))'", "part": "SELECT id, message_id, session_id, time_created, time_updated, data FROM part WHERE session_id = '\(sql(id))'"]
+    public static func raw(session: SessionSummary) throws -> String { try rawLog(session: session).text }
+
+    static func rawLog(session: SessionSummary) throws -> (text: String, wasTruncated: Bool) {
+        let db = try OpenCodeDatabase(session.sourceURL)
+        let id = OpenCodeDatabase.quoted(providerID(session))
+        let tables = db.format == .v2 ? ["session_v2", "session_message"] : ["session", "message", "part"]
+        var budget = OpenCodeDatabase.Budget(bytes: LogLimits.rawBytes)
         var blocks: [String] = []
-        for (name, statement) in tables { let rows = try query(session.sourceURL, statement); blocks.append("===== \(name) =====\n" + rows.map { row in String(data: (try? JSONSerialization.data(withJSONObject: row.values.compactMapValues { $0 })) ?? Data(), encoding: .utf8) ?? "{}" }.joined(separator: "\n")) }
-        return blocks.joined(separator: "\n")
+        for table in tables {
+            let key = table == db.format.sessionTable ? "id" : "session_id"
+            let columns: String
+            if table == db.format.sessionTable { columns = "id, project_id, parent_id, directory, title, time_created, time_updated" }
+            else { columns = db.format == .v2 ? "id, session_id, type, seq, time_created, time_updated, data" : (table == "part" ? "id, message_id, session_id, time_created, time_updated, data" : "id, session_id, time_created, time_updated, data") }
+            let order = table == "session_message" ? " ORDER BY seq ASC" : " ORDER BY time_created ASC, id ASC"
+            let rows = try db.rows("SELECT \(columns) FROM \(table) WHERE \(key)=\(id)\(order)", budget: &budget)
+            let lines = try rows.map { String(decoding: try JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys, .withoutEscapingSlashes]), as: UTF8.self) }
+            blocks.append("===== \(table) =====\n" + lines.joined(separator: "\n"))
+            if budget.wasTruncated { break }
+        }
+        let raw = blocks.joined(separator: "\n")
+        let encoded = Data(raw.utf8)
+        let truncated = budget.wasTruncated || encoded.count > LogLimits.rawBytes
+        let text = String(decoding: encoded.prefix(LogLimits.rawBytes), as: UTF8.self)
+        return (text, truncated)
     }
 
-    static func delete(
-        sessionID: String,
-        database: URL,
-        expectedUpdated: Date,
-        executables: [URL],
-        timeout: TimeInterval = 15
-    ) throws {
-        let rows = try query(database, "SELECT id, time_updated, time_compacting FROM session WHERE id = '\(sql(sessionID))'")
-        guard let row = rows.first, value(row, "id") == sessionID else { throw SessionShelfError.unreadable("OpenCodeセッションが見つかりません") }
-        guard let updated = date(value(row, "time_updated")), abs(updated.timeIntervalSince(expectedUpdated)) < 0.001 else { throw SessionShelfError.storageItemChanged }
-        guard value(row, "time_compacting") == nil, Date().timeIntervalSince(updated) >= 1800 else { throw SessionShelfError.protectedItem("更新直後または圧縮中のセッション") }
-        guard let executable = executables.first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) else { throw SessionShelfError.unreadable("OpenCode公式CLIが見つかりません") }
-        let process = Process()
-        process.executableURL = executable
-        process.arguments = ["session", "delete", "--pure", sessionID]
-        let errorPipe = Pipe()
-        process.standardError = errorPipe
-        process.standardOutput = Pipe()
-        let stderr = LockedData()
-        errorPipe.fileHandleForReading.readabilityHandler = { handle in
-            stderr.append(handle.availableData)
-        }
-        let group = DispatchGroup()
-        group.enter()
-        process.terminationHandler = { _ in group.leave() }
-        do {
-            try process.run()
-        } catch {
-            errorPipe.fileHandleForReading.readabilityHandler = nil
-            group.leave()
-            throw error
-        }
-        if group.wait(timeout: .now() + timeout) == .timedOut {
-            process.terminate()
-            _ = group.wait(timeout: .now() + 2)
-            errorPipe.fileHandleForReading.readabilityHandler = nil
-            throw SessionShelfError.unreadable("OpenCode CLIが応答しないため削除を中止しました")
-        }
-        errorPipe.fileHandleForReading.readabilityHandler = nil
-        stderr.append(errorPipe.fileHandleForReading.availableData)
-        let stderrText = String(data: stderr.snapshot(), encoding: .utf8) ?? ""
-        guard process.terminationStatus == 0 else {
-            let snippet = stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
-            let clipped = snippet.isEmpty ? "" : ": \(String(snippet.suffix(180)))"
-            throw SessionShelfError.unreadable("OpenCode CLIが削除に失敗しました\(clipped)")
-        }
-    }
-
-    private final class LockedData: @unchecked Sendable {
-        private let lock = NSLock()
-        private var storage = Data()
-
-        func append(_ data: Data) {
-            guard !data.isEmpty else { return }
-            lock.lock()
-            storage.append(data)
-            lock.unlock()
-        }
-
-        func snapshot() -> Data {
-            lock.lock()
-            defer { lock.unlock() }
-            return storage
-        }
-    }
-
-    private static func sql(_ value: String) -> String { value.replacingOccurrences(of: "'", with: "''") }
-    private static func value(_ row: Row, _ key: String) -> String? { row.values[key] ?? nil }
-    private static func date(_ value: String?) -> Date? { guard let value, let number = Double(value) else { return nil }; return Date(timeIntervalSince1970: number > 10_000_000_000 ? number / 1000 : number) }
-
-    private static func query(_ url: URL, _ sql: String) throws -> [Row] {
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nil) == SQLITE_OK else { throw SessionShelfError.unreadable("OpenCode DBを開けません") }
-        defer { sqlite3_close(db) }
-        sqlite3_busy_timeout(db, 250)
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw SessionShelfError.unsupported("OpenCodeのスキーマが未対応です") }
-        defer { sqlite3_finalize(statement) }
-        var rows: [Row] = []
-        var resultCode = SQLITE_ROW
-        while resultCode == SQLITE_ROW {
-            resultCode = sqlite3_step(statement)
-            if resultCode != SQLITE_ROW { break }
-            var values: [String: String?] = [:]
-            for index in 0..<sqlite3_column_count(statement) {
-                guard let name = sqlite3_column_name(statement, index) else { continue }
-                values[String(cString: name)] = sqlite3_column_type(statement, index) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(statement, index))
-            }
-            rows.append(Row(values: values))
-        }
-        guard resultCode == SQLITE_DONE else { throw SessionShelfError.unreadable("OpenCode DBの読み取りに失敗しました") }
-        return rows
-    }
 }

@@ -12,7 +12,7 @@ Session Shelfは、AI開発ツールがローカルに保存した過去セッ�
 - CursorのプランMarkdownを閲覧
 - CursorとGrokのプランを、概要・タスク・Markdown本文に分けた専用画面で表示
 - システム指示や実行環境は通常会話から分離し、必要なときだけ展開
-- Claude Codeとompの思考ブロックは折りたたんだ状態で表示し、必要なときだけ展開
+- Claude Code、OpenCode v2、ompの思考ブロックは折りたたんだ状態で表示し、必要なときだけ展開
 - タイトル・概要・プロジェクト名と、会話本文によるローカル検索
 - 対応する保存場所がない場合は「未検出」、場所はあるが読めない場合は「未対応の保存形式」と想定パス候補を表示
 - 対応済みの非アクティブなセッションをmacOSのゴミ箱へ移動（OpenCodeは公式CLIによる不可逆削除）
@@ -48,16 +48,22 @@ Session Shelfは、AI開発ツールがローカルに保存した過去セッ�
 | Cursor Desktop | `~/.cursor/plans`のプランMarkdown。Desktop内部SQLiteは検出のみ |
 | Cursor CLI | `~/.cursor/projects/*/agent-transcripts`のJSONL。`~/.cursor/chats`の内部SQLiteは検出のみ |
 | Grok Build CLI | `~/.grok/sessions`のセッションディレクトリ、要約、会話JSONL、プランMarkdown |
-| OpenCode | `~/.local/share/opencode/opencode.db`（session/message/partのみ読み取り） |
+| OpenCode | `~/.local/share/opencode/opencode.db`（v1: `session`・`message`・`part`、v2: `session_v2`・`session_message`を読み取り専用で参照） |
 | omp | `~/.omp/agent/sessions/<プロジェクト>/<日時>_<UUID>.jsonl`と同名のbashログディレクトリ |
 
 保存形式は各ツールの公開契約ではないため、形式が変わったログは安全側に倒して「未対応の保存形式」と表示します。
+
+OpenCode v2は2.0.32の保存形式を基準に対応しています。`session_v2`が存在するDBではv2を優先し、移行後に残るv1テーブルは合算しません。v1専用DBは引き続き読み取れます。一部のv1にも`session_message`が存在するため、その場合は外部キーの参照先がv1の`session`かを確認します。v2の必要なテーブル・列が欠ける場合は、v1へ戻さず「未対応の保存形式」として扱います。
+
+v2の会話は保存された`seq`順に表示し、本文・思考・ツール実行結果・シェル操作を解析します。システム情報や圧縮の要約は内部情報として分離します。未知のメッセージ種別や壊れたJSONは通常表示から除き、生ログに残します。本文検索は384KB、詳細解析は8MB、生ログは2MB、読み取りレコードは各処理で最大5,000件に制限し、詳細または生ログを省略した場合は画面へ通知します。認証・設定・イベントテーブルは読みません。
 
 ## 保護対象
 
 次の項目はゴミ箱へ移す対象にしません。
 
-OpenCodeの「完全に削除」はゴミ箱を経由せず、公式CLI `opencode session delete <ID>` を実行します。CLIは`PATH`を優先し、HomebrewとMacPortsの標準パスも確認します。空または相対的な`PATH`要素は使用しません。削除直前に存在・更新時刻・圧縮状態を再確認し、CLIがない場合や状態が変わった場合は実行しません。
+OpenCodeの「完全に削除」はゴミ箱を経由せず、公式CLIを実行します。v1は`opencode session delete <ID>`、v2はローカルの専用サーバーを使う`opencode session delete --standalone <ID>`を使用します。CLIは`PATH`を優先し、HomebrewとMacPortsの標準パスも確認します。空または相対的な`PATH`要素は使用せず、シェルも介しません。CLIのメジャーバージョンがDB形式と一致しない場合や、バージョンを確認できない場合は削除しません。
+
+削除直前に許可されたDBの場所、シンボリックリンク、存在、更新時刻、圧縮状態を再確認します。v2では`time_suspended`がある実行中・再開待ちのセッションも保護します。CLIの保存先は確認したDBの場所へ固定します。親子は子から親の順に削除し、子の削除失敗や新たな子の追加によって子が残る場合は親を削除しません。CLIがない場合や状態が変わった場合、タイムアウトした場合も停止します。
 
 OpenCodeのストレージは`~/.local/share/opencode`、`~/.local/state/opencode`、`~/.cache/opencode`、`~/.config/opencode`を対象に可視化します。cacheの既知項目は再生成可能、shareのlog・tool-outputとstateのprompt-historyは要確認、DB・auth・config・未知形式は保護対象です。
 

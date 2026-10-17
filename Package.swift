@@ -23,7 +23,7 @@ let package = Package(
         ),
         .testTarget(
             name: "SessionShelfTests",
-            dependencies: ["SessionShelf"]
+            dependencies: ["SessionShelf", "SessionShelfCore", "CSQLite3"]
         )
     ]
 )

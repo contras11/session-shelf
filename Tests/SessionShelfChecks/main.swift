@@ -241,13 +241,13 @@ struct SessionShelfChecks {
             try createOpenCodeDB(db, sql: "CREATE TABLE session(id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, slug TEXT, directory TEXT, title TEXT, version TEXT, time_created INTEGER, time_updated INTEGER, time_compacting INTEGER, time_archived INTEGER); CREATE TABLE message(id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT); CREATE TABLE part(id TEXT, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT); INSERT INTO session VALUES('delete-me','p',NULL,'s','/tmp','匿名削除','1',1000,1000,NULL,NULL);")
             let record = home.appendingPathComponent("args")
             let cli = home.appendingPathComponent("opencode")
-            try write("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"\(record.path)\"\nexit 0\n", to: cli)
+            try write("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 1.19.0; exit 0; fi\nprintf '%s\\n' \"$@\" > \"\(record.path)\"\nexit 0\n", to: cli)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli.path)
             let repository = SessionRepository(homeDirectory: home, openCodeExecutables: [cli])
             let session = try requireValue(repository.scan(.openCode).sessions.first, "削除fixture一覧なし")
             try repository.delete(session, mode: session.deletionMode)
             let args = try String(contentsOf: record)
-            try require(args.contains("session\n") && args.contains("delete\n") && args.contains("--pure\n") && args.contains("delete-me\n"), "偽CLI引数が不正")
+            try require(args.contains("session\n") && args.contains("delete\n") && !args.contains("--pure\n") && !args.contains("--standalone\n") && args.contains("delete-me\n"), "偽CLI引数が不正")
             try requireThrows { try repository.delete(session, mode: .openCodeCLI(sessionID: "other")) }
             try require(String(contentsOf: record) == args, "不一致IDでCLI記録が変化")
             try requireThrows { try repository.moveToTrash(session) }
@@ -277,7 +277,7 @@ struct SessionShelfChecks {
             try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
             let record = home.appendingPathComponent("path-args")
             let cli = bin.appendingPathComponent("opencode")
-            try write("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"\(record.path)\"\nexit 0\n", to: cli)
+            try write("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 1.19.0; exit 0; fi\nprintf '%s\\n' \"$@\" > \"\(record.path)\"\nexit 0\n", to: cli)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli.path)
 
             let repository = SessionRepository(
@@ -820,7 +820,7 @@ struct SessionShelfChecks {
             let db = home.appendingPathComponent(".local/share/opencode/opencode.db")
             try createOpenCodeDB(db, sql: "CREATE TABLE session(id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, slug TEXT, directory TEXT, title TEXT, version TEXT, time_created INTEGER, time_updated INTEGER, time_compacting INTEGER, time_archived INTEGER); CREATE TABLE message(id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT); CREATE TABLE part(id TEXT, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT); INSERT INTO session VALUES('hang-me','p',NULL,'s','/tmp','タイムアウト','1',1000,1000,NULL,NULL);")
             let hang = home.appendingPathComponent("hang-opencode")
-            try write("#!/bin/sh\nsleep 30\nexit 0\n", to: hang)
+            try write("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 1.19.0; exit 0; fi\nexec sleep 30\nexit 0\n", to: hang)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hang.path)
             let hanging = SessionRepository(homeDirectory: home, openCodeExecutables: [hang], openCodeDeletionTimeout: 0.5)
             let session = try requireValue(hanging.scan(.openCode).sessions.first, "タイムアウトfixture一覧なし")
@@ -832,6 +832,7 @@ struct SessionShelfChecks {
             let noisy = home.appendingPathComponent("noisy-opencode")
             try write("""
             #!/bin/sh
+            if [ "$1" = --version ]; then echo 1.19.0; exit 0; fi
             awk 'BEGIN { for (i = 0; i < 20000; i++) print "noise" }' >&2
             echo sentinel-cli-error >&2
             exit 1

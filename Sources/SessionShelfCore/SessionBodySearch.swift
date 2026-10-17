@@ -29,7 +29,7 @@ public enum SessionBodySearch {
         case (.grokBuildCLI, _):
             parsed = try? LogParsing.parseGrokDirectory(session.sourceURL, byteLimit: LogLimits.listBytes)
         case (.openCode, _):
-            parsed = try? OpenCodeRepository.loadDetail(session: session)
+            parsed = try? OpenCodeRepository.loadDetail(session: session, byteLimit: LogLimits.listBytes)
         case (.cursorDesktop, .plan):
             parsed = try? LogParsing.parseMarkdown(at: session.sourceURL, byteLimit: LogLimits.listBytes)
         default:
